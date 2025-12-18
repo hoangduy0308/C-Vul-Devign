@@ -750,8 +750,7 @@ def train(model, train_loader, val_loader, config):
             factor=scheduler_factor, 
             patience=scheduler_patience,
             threshold=1e-3,
-            min_lr=scheduler_min_lr,
-            verbose=True
+            min_lr=scheduler_min_lr
         )
     
     scaler = GradScaler(enabled=config.use_amp)
