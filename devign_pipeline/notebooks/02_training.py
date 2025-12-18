@@ -26,6 +26,7 @@ import os
 import sys
 import time
 import json
+import random
 import numpy as np
 from pathlib import Path
 from datetime import datetime
@@ -307,8 +308,41 @@ class ImprovedConfig(TrainConfig):
                 if not k.startswith('_') and not callable(v)}
 
 
-# Use ImprovedConfig for this training run
-config = ImprovedConfig()
+class EnhancedConfig(ImprovedConfig):
+    """
+    Enhanced configuration with:
+    - hidden_dim: 128 → 160 (more capacity, same regularization)
+    - Threshold search narrowed to [0.35, 0.45] with finer step
+    - Multi-head attention pooling (replaces additive attention)
+    - Ensemble training support (3-5 models with different seeds)
+    """
+    # Capacity (INCREASED slightly)
+    hidden_dim: int = 160              # UP from 128 - BiGRU output = 320
+    
+    # Threshold optimization: narrow, finer grid
+    threshold_min: float = 0.35
+    threshold_max: float = 0.45
+    threshold_step: float = 0.005      # Finer than 0.01
+    
+    # Multi-head attention pooling
+    use_multihead_attention: bool = True
+    num_attention_heads: int = 4
+    attention_dropout: float = 0.1
+    
+    # Ensemble training
+    ensemble_size: int = 5
+    ensemble_base_seed: int = 1337
+    
+    # SWA: start earlier based on Oracle advice
+    swa_start_epoch: int = 6           # DOWN from 10 - start SWA earlier
+    
+    def to_dict(self) -> Dict:
+        return {k: v for k, v in self.__class__.__dict__.items() 
+                if not k.startswith('_') and not callable(v)}
+
+
+# Use EnhancedConfig for this training run
+config = EnhancedConfig()
 
 # %% [markdown]
 # ## 3. Dataset & DataLoader
@@ -455,6 +489,48 @@ print(f"Class: neg={np.sum(train_labels==0)}, pos={np.sum(train_labels==1)}")
 # ## 4. Hybrid BiGRU Model with V2 Features
 
 # %%
+class MultiHeadSelfAttentionPooling(nn.Module):
+    """
+    Multi-head self-attention pooling over BiGRU outputs.
+    Uses a single learned query to attend over the sequence.
+    
+    Inputs:
+      - rnn_outputs: [B, T, D]
+      - attention_mask: [B, T] (1 = keep, 0 = pad)
+    Output:
+      - context: [B, D]
+    """
+    def __init__(self, input_dim: int, num_heads: int = 4, dropout: float = 0.1):
+        super().__init__()
+        self.input_dim = input_dim
+        self.num_heads = num_heads
+        
+        self.query = nn.Parameter(torch.randn(1, 1, input_dim))
+        self.mha = nn.MultiheadAttention(
+            embed_dim=input_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, rnn_outputs: torch.Tensor, attention_mask: torch.Tensor):
+        bsz = rnn_outputs.size(0)
+        
+        query = self.query.expand(bsz, -1, -1)  # [B, 1, D]
+        key_padding_mask = ~attention_mask.bool()  # True = ignore
+        
+        attn_output, _ = self.mha(
+            query, rnn_outputs, rnn_outputs,
+            key_padding_mask=key_padding_mask,
+            need_weights=False,
+        )
+        
+        context = attn_output.squeeze(1)  # [B, D]
+        context = self.dropout(context)
+        return context
+
+
 class ImprovedHybridBiGRUVulnDetector(nn.Module):
     """
     Improved Hybrid BiGRU with:
@@ -496,12 +572,20 @@ class ImprovedHybridBiGRUVulnDetector(nn.Module):
         
         self.rnn_out_dim = config.hidden_dim * (2 if config.bidirectional else 1)
         
-        # Attention mechanism
-        self.attention = nn.Sequential(
-            nn.Linear(self.rnn_out_dim, self.rnn_out_dim // 2),
-            nn.Tanh(),
-            nn.Linear(self.rnn_out_dim // 2, 1, bias=False)
-        )
+        # Attention mechanism (configurable: additive or multi-head)
+        self.use_multihead_attention = getattr(config, 'use_multihead_attention', False)
+        if self.use_multihead_attention:
+            self.attention = MultiHeadSelfAttentionPooling(
+                input_dim=self.rnn_out_dim,
+                num_heads=getattr(config, 'num_attention_heads', 4),
+                dropout=getattr(config, 'attention_dropout', 0.1),
+            )
+        else:
+            self.attention = nn.Sequential(
+                nn.Linear(self.rnn_out_dim, self.rnn_out_dim // 2),
+                nn.Tanh(),
+                nn.Linear(self.rnn_out_dim // 2, 1, bias=False)
+            )
         # Dropout on attention context (regularization)
         self.context_dropout = nn.Dropout(0.2)
         
@@ -598,18 +682,16 @@ class ImprovedHybridBiGRUVulnDetector(nn.Module):
             # Standard GRU
             rnn_out, _ = self.gru(embedded)  # [B, L, D]
         
-        # Attention
-        att_scores = self.attention(rnn_out)  # [B, L, 1]
-        
-        # Mask attention scores
-        mask = attention_mask.unsqueeze(-1)  # [B, L, 1]
-        att_scores = att_scores.masked_fill(mask == 0, -1e4)
-        
-        att_weights = F.softmax(att_scores, dim=1)
-        
-        # Context vector
-        context_vector = torch.sum(rnn_out * att_weights, dim=1)  # [B, D]
-        context_vector = self.context_dropout(context_vector)  # NEW: regularization
+        # Attention (handles both additive and multi-head)
+        if self.use_multihead_attention:
+            context_vector = self.attention(rnn_out, attention_mask)  # [B, D]
+        else:
+            att_scores = self.attention(rnn_out)  # [B, L, 1]
+            mask = attention_mask.unsqueeze(-1)  # [B, L, 1]
+            att_scores = att_scores.masked_fill(mask == 0, -1e4)
+            att_weights = F.softmax(att_scores, dim=1)
+            context_vector = torch.sum(rnn_out * att_weights, dim=1)  # [B, D]
+            context_vector = self.context_dropout(context_vector)
         
         # Vuln features
         if self.config.use_vuln_features and vuln_features is not None:
@@ -712,6 +794,59 @@ def find_optimal_threshold(y_true, y_probs, min_t=0.1, max_t=0.9, step=0.01):
             best_t = t
             
     return best_t, best_f1
+
+
+@torch.no_grad()
+def update_bn_dict_loader(loader, model, device=None):
+    """
+    Custom update_bn for DataLoaders that yield dict batches.
+    Recomputes BatchNorm running statistics for SWA models.
+    """
+    from torch.nn.modules.batchnorm import _BatchNorm
+    
+    has_bn = any(isinstance(m, _BatchNorm) for m in model.modules())
+    if not has_bn:
+        return
+    
+    was_training = model.training
+    model.train()
+    
+    momenta = {}
+    for module in model.modules():
+        if isinstance(module, _BatchNorm):
+            module.running_mean = torch.zeros_like(module.running_mean)
+            module.running_var = torch.ones_like(module.running_var)
+            momenta[module] = module.momentum
+            module.momentum = None
+    
+    n = 0
+    for batch in loader:
+        input_ids = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
+        vuln_features = batch.get("vuln_features", None)
+        lengths = batch.get("lengths", None)
+        
+        if device is not None:
+            input_ids = input_ids.to(device, non_blocking=True)
+            attention_mask = attention_mask.to(device, non_blocking=True)
+            if vuln_features is not None:
+                vuln_features = vuln_features.to(device, non_blocking=True)
+            if lengths is not None:
+                lengths = lengths.to(device, non_blocking=True)
+        
+        b = input_ids.size(0)
+        momentum = b / float(n + b)
+        for module in momenta.keys():
+            module.momentum = momentum
+        
+        model(input_ids, attention_mask, vuln_features, lengths)
+        n += b
+    
+    for module, mom in momenta.items():
+        module.momentum = mom
+    
+    model.train(was_training)
+
 
 def train_epoch(model, loader, optimizer, criterion, scaler, grad_clip, accum_steps, use_amp):
     model.train()
@@ -818,7 +953,87 @@ def evaluate(model, loader, criterion, use_amp, threshold=None, find_threshold=F
         'recall': recall,
         'f1': f1,
         'auc_roc': auc_roc,
-        'best_threshold': best_t if find_threshold else used_t
+        'best_threshold': best_t if find_threshold else used_t,
+        'labels': all_labels,    # For ensemble thresholding
+        'probs': all_probs,      # For ensemble thresholding
+    }
+
+
+# %% [markdown]
+# ## 5.5 Ensemble Training Utilities
+
+# %%
+def set_global_seed(seed: int):
+    """Set all random seeds for reproducibility"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def build_model(config):
+    """Build and initialize model"""
+    model = ImprovedHybridBiGRUVulnDetector(config)
+    model.to(DEVICE)
+    if N_GPUS > 1:
+        model = nn.DataParallel(model)
+    return model
+
+
+@torch.no_grad()
+def predict_ensemble(models, loader, threshold, use_amp: bool):
+    """
+    Run ensemble inference by averaging probabilities from multiple models.
+    
+    Returns metrics dict with accuracy, precision, recall, f1, auc_roc.
+    """
+    for m in models:
+        m.eval()
+    
+    all_labels = []
+    all_probs_ensemble = []
+    
+    for batch in tqdm(loader, desc="Ensemble Inference", leave=False):
+        input_ids = batch['input_ids'].to(DEVICE, non_blocking=True)
+        attention_mask = batch['attention_mask'].to(DEVICE, non_blocking=True)
+        vuln_features = batch.get('vuln_features', None)
+        if vuln_features is not None:
+            vuln_features = vuln_features.to(DEVICE, non_blocking=True)
+        lengths = batch['lengths'].to(DEVICE, non_blocking=True)
+        
+        probs_sum = 0.0
+        for model in models:
+            with autocast(device_type='cuda', enabled=use_amp):
+                logits = model(input_ids, attention_mask, vuln_features, lengths)
+                probs = torch.softmax(logits, dim=1)[:, 1]
+            probs_sum += probs
+        
+        probs_avg = (probs_sum / len(models)).cpu().numpy()
+        all_probs_ensemble.extend(probs_avg)
+        all_labels.extend(batch['labels'].numpy())
+    
+    all_labels = np.array(all_labels)
+    all_probs_ensemble = np.array(all_probs_ensemble)
+    preds = (all_probs_ensemble >= threshold).astype(int)
+    
+    accuracy = accuracy_score(all_labels, preds)
+    precision = precision_score(all_labels, preds, zero_division=0)
+    recall = recall_score(all_labels, preds, zero_division=0)
+    f1 = f1_score(all_labels, preds, zero_division=0)
+    try:
+        auc_roc = roc_auc_score(all_labels, all_probs_ensemble)
+    except:
+        auc_roc = 0.5
+    
+    return {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'auc_roc': auc_roc,
+        'labels': all_labels,
+        'probs': all_probs_ensemble,
     }
 
 # %% [markdown]
@@ -974,9 +1189,9 @@ def train(model, train_loader, val_loader, config):
     swa_threshold = best_threshold_overall
     if use_swa and swa_model is not None and epoch >= swa_start_epoch:
         print("\n[SWA] Updating BatchNorm statistics...")
-        # Update BN stats with training data
+        # Update BN stats with training data (custom function for dict batches)
         swa_model.to(DEVICE)
-        update_bn(train_loader, swa_model, device=DEVICE)
+        update_bn_dict_loader(train_loader, swa_model, device=DEVICE)
         
         # Evaluate SWA model
         print("[SWA] Evaluating SWA model...")
@@ -1010,9 +1225,22 @@ def train(model, train_loader, val_loader, config):
     print(f"Done! Best F1={best_f1:.4f} at epoch {best_epoch} (T={best_threshold_overall:.2f})")
     print("="*50)
     
-    # Save history
+    # Save history (convert numpy types to native Python for JSON serialization)
+    def convert_to_serializable(obj):
+        if isinstance(obj, dict):
+            return {k: convert_to_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_to_serializable(v) for v in obj]
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, (np.int32, np.int64)):
+            return int(obj)
+        return obj
+    
     with open(os.path.join(LOG_DIR, 'training_history.json'), 'w') as f:
-        json.dump(history, f, indent=2)
+        json.dump(convert_to_serializable(history), f, indent=2)
     
     return history, best_threshold_overall, swa_model if use_swa else None
 
@@ -1020,62 +1248,123 @@ def train(model, train_loader, val_loader, config):
 # ## 7. Run Training
 
 # %%
-result = train(model, train_loader, val_loader, config)
-if len(result) == 3:
-    history, best_threshold, swa_model = result
-else:
-    history, best_threshold = result
+# Check if ensemble mode is enabled
+USE_ENSEMBLE = getattr(config, 'ensemble_size', 1) > 1
+
+if USE_ENSEMBLE:
+    # ============ ENSEMBLE TRAINING ============
+    print(f"\n{'='*50}")
+    print(f"ENSEMBLE TRAINING: {config.ensemble_size} models")
+    print(f"{'='*50}\n")
+    
+    ensemble_models = []
+    all_val_probs = []
+    all_val_labels = None
+    
+    for i in range(config.ensemble_size):
+        seed = config.ensemble_base_seed + i
+        print(f"\n{'='*50}")
+        print(f"Training model {i+1}/{config.ensemble_size} (seed={seed})")
+        print(f"{'='*50}\n")
+        
+        set_global_seed(seed)
+        model = build_model(config)
+        
+        history, best_threshold, swa_model = train(model, train_loader, val_loader, config)
+        
+        # Load best checkpoint for this model
+        checkpoint = torch.load(os.path.join(MODEL_DIR, 'best_model.pt'), weights_only=False)
+        if isinstance(model, nn.DataParallel):
+            model.module.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        
+        ensemble_models.append(model)
+        
+        # Collect val probs for ensemble threshold
+        criterion = nn.CrossEntropyLoss()
+        val_metrics = evaluate(model, val_loader, criterion, config.use_amp, find_threshold=False)
+        all_val_probs.append(val_metrics['probs'])
+        if all_val_labels is None:
+            all_val_labels = val_metrics['labels']
+        
+        # Save this model
+        torch.save({
+            'model_state_dict': model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict(),
+            'seed': seed,
+        }, os.path.join(MODEL_DIR, f'ensemble_model_{i}.pt'))
+    
+    # Ensemble threshold optimization
+    all_val_probs = np.stack(all_val_probs, axis=0).mean(axis=0)
+    best_threshold, best_f1 = find_optimal_threshold(
+        all_val_labels, all_val_probs,
+        min_t=config.threshold_min,
+        max_t=config.threshold_max,
+        step=config.threshold_step,
+    )
+    print(f"\n[ENSEMBLE] Optimal threshold: {best_threshold:.3f} (Val F1={best_f1:.4f})")
+    
+    # Final ensemble model reference for evaluation
+    model = ensemble_models[0]  # Keep first for single-model eval comparison
     swa_model = None
+    
+else:
+    # ============ SINGLE MODEL TRAINING ============
+    result = train(model, train_loader, val_loader, config)
+    if len(result) == 3:
+        history, best_threshold, swa_model = result
+    else:
+        history, best_threshold = result
+        swa_model = None
+    ensemble_models = None
 
 # %% [markdown]
 # ## 8. Final Evaluation on Test Set
 
 # %%
-# Load best model
-checkpoint = torch.load(os.path.join(MODEL_DIR, 'best_model.pt'), weights_only=False)
-
-if isinstance(model, nn.DataParallel):
-    model.module.load_state_dict(checkpoint['model_state_dict'])
+if USE_ENSEMBLE and ensemble_models is not None:
+    # ============ ENSEMBLE EVALUATION ============
+    print(f"\n{'='*50}")
+    print("ENSEMBLE TEST RESULTS")
+    print(f"{'='*50}")
+    
+    test_metrics = predict_ensemble(
+        ensemble_models, test_loader, best_threshold, config.use_amp
+    )
+    print(f"Acc={test_metrics['accuracy']:.4f} P={test_metrics['precision']:.4f} R={test_metrics['recall']:.4f} F1={test_metrics['f1']:.4f} AUC={test_metrics['auc_roc']:.4f} T={best_threshold:.3f}")
+    
+    labels = test_metrics['labels']
+    probs = test_metrics['probs']
+    preds = (probs >= best_threshold).astype(int)
+    
 else:
-    model.load_state_dict(checkpoint['model_state_dict'])
-
-# Evaluate on test set
-criterion = nn.CrossEntropyLoss()
-test_metrics = evaluate(
-    model, test_loader, criterion, config.use_amp, 
-    threshold=best_threshold
-)
-
-print(f"\n{'='*50}")
-print("TEST RESULTS")
-print(f"{'='*50}")
-print(f"Acc={test_metrics['accuracy']:.4f} P={test_metrics['precision']:.4f} R={test_metrics['recall']:.4f} F1={test_metrics['f1']:.4f} AUC={test_metrics['auc_roc']:.4f} T={best_threshold:.2f}")
+    # ============ SINGLE MODEL EVALUATION ============
+    # Load best model
+    checkpoint = torch.load(os.path.join(MODEL_DIR, 'best_model.pt'), weights_only=False)
+    
+    if isinstance(model, nn.DataParallel):
+        model.module.load_state_dict(checkpoint['model_state_dict'])
+    else:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Evaluate on test set
+    criterion = nn.CrossEntropyLoss()
+    test_metrics = evaluate(
+        model, test_loader, criterion, config.use_amp, 
+        threshold=best_threshold
+    )
+    
+    print(f"\n{'='*50}")
+    print("TEST RESULTS")
+    print(f"{'='*50}")
+    print(f"Acc={test_metrics['accuracy']:.4f} P={test_metrics['precision']:.4f} R={test_metrics['recall']:.4f} F1={test_metrics['f1']:.4f} AUC={test_metrics['auc_roc']:.4f} T={best_threshold:.2f}")
+    
+    labels = test_metrics['labels']
+    probs = test_metrics['probs']
+    preds = (probs >= best_threshold).astype(int)
 
 # %%
-# Detailed classification report
-@torch.no_grad()
-def get_predictions(model, loader, use_amp=True):
-    model.eval()
-    all_preds, all_labels, all_probs = [], [], []
-    
-    for batch in loader:
-        input_ids = batch['input_ids'].to(DEVICE, non_blocking=True)
-        attention_mask = batch['attention_mask'].to(DEVICE, non_blocking=True)
-        vuln_features = batch['vuln_features'].to(DEVICE, non_blocking=True) if 'vuln_features' in batch else None
-        lengths = batch['lengths'].to(DEVICE, non_blocking=True)
-        
-        with autocast(device_type='cuda', enabled=use_amp):
-            logits = model(input_ids, attention_mask, vuln_features, lengths)
-        probs = torch.softmax(logits, dim=1)[:, 1]
-        
-        all_labels.extend(batch['labels'].numpy())
-        all_probs.extend(probs.cpu().numpy())
-    
-    return np.array(all_labels), np.array(all_probs)
-
-labels, probs = get_predictions(model, test_loader, config.use_amp)
-preds = (probs >= best_threshold).astype(int)
-
+# Detailed classification report (using labels/probs/preds from evaluation above)
 print("\nClassification Report:")
 print(classification_report(labels, preds, target_names=['Non-Vulnerable', 'Vulnerable']))
 
