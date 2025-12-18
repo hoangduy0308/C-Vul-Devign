@@ -15,6 +15,7 @@ from .rules import (
     score_vulnerability_risk,
     get_vulnerability_summary,
 )
+from .vuln_lines import extract_vul_line_numbers
 
 __all__ = [
     "VulnDictionary",
@@ -28,4 +29,5 @@ __all__ = [
     "analyze_pointer_usage",
     "score_vulnerability_risk",
     "get_vulnerability_summary",
+    "extract_vul_line_numbers",
 ]

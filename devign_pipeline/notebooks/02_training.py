@@ -1,11 +1,11 @@
 # %% [markdown]
-# # Devign Model Training Pipeline - BiGRU
+# # Devign Model Training Pipeline - Hybrid BiGRU + V2 Features
 # 
 # Train vulnerability detection models on preprocessed Devign dataset.
 # 
 # **Environment**: Kaggle with 2x NVIDIA T4 GPU (32GB total VRAM), 13GB RAM
 # 
-# **Model**: BiGRU with Additive Attention
+# **Model**: Hybrid BiGRU (Tokens) + Dense MLP (V2 Features) with Additive Attention
 # 
 # **Features**:
 # - Multi-GPU training with DataParallel
@@ -15,6 +15,8 @@
 # - Early stopping & checkpointing
 # - Label smoothing option
 # - Comprehensive metrics (Accuracy, Precision, Recall, F1, AUC-ROC)
+# - **Dynamic Threshold Optimization** (maximizes Validation F1)
+# - **Hybrid Architecture** combining code tokens and static vulnerability features
 
 # %% [markdown]
 # ## 1. Setup & Configuration
@@ -27,14 +29,14 @@ import json
 import numpy as np
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, 
     f1_score, roc_auc_score, confusion_matrix, classification_report
@@ -45,7 +47,7 @@ from tqdm.auto import tqdm
 if os.path.exists('/kaggle'):
     WORKING_DIR = '/kaggle/working'
     DATA_DIR = '/kaggle/input/devign-final/processed'
-    sys.path.insert(0, '/kaggle/working/devign_pipeline')
+    sys.path.insert(0, '/tmp/devign_pipeline')
 else:
     WORKING_DIR = '/media/hdi/Hdii/Work/C Vul Devign'
     DATA_DIR = '/media/hdi/Hdii/Work/C Vul Devign/Dataset/devign slice'
@@ -61,12 +63,11 @@ os.makedirs(LOG_DIR, exist_ok=True)
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 N_GPUS = torch.cuda.device_count()
 
-print(f"Device: {DEVICE}")
-print(f"GPU count: {N_GPUS}")
 if torch.cuda.is_available():
-    for i in range(N_GPUS):
-        gpu = torch.cuda.get_device_properties(i)
-        print(f"  GPU {i}: {gpu.name} ({gpu.total_memory / 1024**3:.1f} GB)")
+    import torch.backends.cudnn as cudnn
+    cudnn.benchmark = True
+    gpu_info = ', '.join([f"{torch.cuda.get_device_properties(i).name}" for i in range(N_GPUS)])
+    print(f"Device: {DEVICE} ({N_GPUS}x {gpu_info})")
 
 # %% [markdown]
 # ## 2. Training Configuration
@@ -84,34 +85,42 @@ data_config = load_data_config(DATA_DIR)
 
 class TrainConfig:
     """Training hyperparameters - optimized for Devign dataset"""
-    # Model (optimized for vocab_size=266, 21K samples)
+    # Model (REDUCED CAPACITY to combat overfitting - vocab=266, 21K samples)
+    # Oracle analysis showed Train F1=0.79 vs Best Val F1=0.71 at epoch 17
     vocab_size: int = data_config.get('vocab_size', 266)
-    embed_dim: int = 128          # Reduced from 256 for small vocab
-    hidden_dim: int = 256         # BiGRU output = 512
-    num_layers: int = 2
-    rnn_dropout: float = 0.3      # Dropout between GRU layers
-    classifier_dropout: float = 0.5  # Stronger dropout in classifier
+    embed_dim: int = 64           # DOWN from 128 - smaller vocab needs less embedding capacity
+    hidden_dim: int = 128         # DOWN from 256 - BiGRU output = 256 (bidirectional)
+    num_layers: int = 1           # DOWN from 2 - single layer less prone to overfitting
+    rnn_dropout: float = 0.3      # Dropout between GRU layers (not used for num_layers=1)
+    embedding_dropout: float = 0.15  # NEW - dropout after embedding layer
+    classifier_dropout: float = 0.4  # DOWN from 0.5 - rebalanced with embedding dropout
     bidirectional: bool = True
     
-    # Training
-    batch_size: int = 64
-    accumulation_steps: int = 2   # Effective batch size = 128
-    learning_rate: float = 1e-3
-    max_lr: float = 2e-3          # For OneCycleLR
-    weight_decay: float = 5e-3    # Increased from 1e-5
-    max_epochs: int = 50
+    # Hybrid Model Features (V2)
+    use_vuln_features: bool = True
+    vuln_feature_dim: int = len(data_config.get('vuln_feature_names', [])) or 26
+    vuln_feature_hidden_dim: int = 64
+    vuln_feature_dropout: float = 0.2
+    
+    # Training (OPTIMIZED for dual T4 - 32GB VRAM total)
+    batch_size: int = 128         # UP from 64 - tận dụng 32GB VRAM
+    accumulation_steps: int = 1   # DOWN from 2 - batch đã đủ lớn
+    learning_rate: float = 5e-4   # DOWN from 1e-3 - more stable convergence
+    max_lr: float = 1.5e-3        # DOWN from 2e-3 - for OneCycleLR (if used)
+    weight_decay: float = 1e-2    # UP from 5e-3 - stronger L2 regularization
+    max_epochs: int = 35          # DOWN from 50 - oracle showed best at epoch 17
     grad_clip: float = 1.0
     
     # Regularization
     label_smoothing: float = 0.05  # Helps with noisy labels
     
-    # Early stopping
-    patience: int = 7
+    # Early stopping (MORE AGGRESSIVE)
+    patience: int = 5             # DOWN from 10 - stop sooner when plateauing
     min_delta: float = 1e-4
     
     # Data
     max_seq_length: int = 512
-    num_workers: int = 4
+    num_workers: int = 2          # DOWN from 4 - Kaggle chỉ 2 vCPU
     
     # Checkpointing
     save_every: int = 5
@@ -119,29 +128,77 @@ class TrainConfig:
     # Mixed precision
     use_amp: bool = True
     
-    # Scheduler: 'onecycle' or 'plateau'
-    scheduler_type: str = 'onecycle'
+    # Scheduler: 'plateau' more stable than 'onecycle' for small datasets
+    scheduler_type: str = 'plateau'  # CHANGED from 'onecycle'
+    
+    # Threshold Optimization
+    use_optimal_threshold: bool = True
+    threshold_min: float = 0.1
+    threshold_max: float = 0.9
+    threshold_step: float = 0.01
     
     def to_dict(self) -> Dict:
         return {k: v for k, v in self.__class__.__dict__.items() 
                 if not k.startswith('_') and not callable(v)}
 
-config = TrainConfig()
-print("Training config:")
-for k, v in config.to_dict().items():
-    print(f"  {k}: {v}")
+class LargeTrainConfig(TrainConfig):
+    """
+    Larger model configuration for better performance.
+    - hidden_dim: 128 → 192 (BiGRU output = 384)
+    - num_layers: 1 → 2 (stacked BiGRU)
+    - Stronger regularization
+    - Packed sequences enabled for 30-40% speedup
+    """
+    # Model capacity (INCREASED)
+    embed_dim: int = 64
+    hidden_dim: int = 192         # UP from 128 - BiGRU output = 384
+    num_layers: int = 2           # UP from 1 - stacked BiGRU
+
+    # Regularization (STRONGER)
+    rnn_dropout: float = 0.4      # UP from 0.3 (active with 2 layers!)
+    embedding_dropout: float = 0.2   # UP from 0.15
+    classifier_dropout: float = 0.5  # UP from 0.4
+    weight_decay: float = 2e-2    # UP from 1e-2 - stronger L2
+    label_smoothing: float = 0.08 # UP from 0.05
+
+    # Vuln features MLP
+    vuln_feature_hidden_dim: int = 96  # UP from 64
+    vuln_feature_dropout: float = 0.25 # UP from 0.2
+
+    # Training (adjusted for larger model)
+    batch_size: int = 96          # DOWN from 128 - larger model needs more memory
+    accumulation_steps: int = 1
+    learning_rate: float = 4e-4   # DOWN from 5e-4 - more conservative
+    max_lr: float = 1.2e-3        # DOWN from 1.5e-3
+    max_epochs: int = 40          # UP from 35 - allow more time to converge
+
+    # Optimization features (NEW)
+    use_packed_sequences: bool = True  # Enable packed sequences for 30-40% speedup
+
+    # Early stopping
+    patience: int = 5
+    min_delta: float = 1e-4
+
+    # Scheduler
+    scheduler_type: str = 'plateau'
+
+    def to_dict(self) -> Dict:
+        return {k: v for k, v in self.__class__.__dict__.items() 
+                if not k.startswith('_') and not callable(v)}
+
+config = LargeTrainConfig()
 
 # %% [markdown]
 # ## 3. Dataset & DataLoader
 
 # %%
 class DevignDataset(Dataset):
-    """Load preprocessed single .npz file"""
+    """Load preprocessed single .npz file (tokens + vuln features)"""
     
-    def __init__(self, npz_path: str, max_seq_length: int = 512):
+    def __init__(self, npz_path: str, max_seq_length: int = 512, load_vuln_features: bool = True):
         self.max_seq_length = max_seq_length
+        self.load_vuln_features = load_vuln_features
         
-        print(f"Loading {npz_path}...")
         data = np.load(npz_path)
         self.input_ids = data['input_ids']
         self.labels = data['labels']
@@ -152,13 +209,32 @@ class DevignDataset(Dataset):
         else:
             self.attention_mask = None
         
-        print(f"  Loaded {len(self.labels)} samples")
+        # Load vulnerability features if requested
+        self.vuln_features = None
+        if self.load_vuln_features:
+            path_obj = Path(npz_path)
+            vuln_path = path_obj.with_name(f"{path_obj.stem}_vuln.npz")
+            
+            if vuln_path.exists():
+                vuln_data = np.load(vuln_path)
+                if 'features' in vuln_data:
+                    self.vuln_features = vuln_data['features']
+                elif 'vuln_features' in vuln_data:
+                    self.vuln_features = vuln_data['vuln_features']
+                    
+                if self.vuln_features is not None:
+                    if len(self.vuln_features) != len(self.labels):
+                        self.vuln_features = None
     
     def __len__(self) -> int:
         return len(self.labels)
     
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        input_ids = self.input_ids[idx][:self.max_seq_length]
+        # Raw sequence for this sample
+        raw_ids = self.input_ids[idx]
+        
+        # Truncate to max_seq_length
+        input_ids = raw_ids[:self.max_seq_length]
         
         # Pad if needed
         padding_length = self.max_seq_length - len(input_ids)
@@ -169,15 +245,36 @@ class DevignDataset(Dataset):
         if self.attention_mask is not None:
             attention_mask = self.attention_mask[idx][:self.max_seq_length]
             if len(attention_mask) < self.max_seq_length:
-                attention_mask = np.pad(attention_mask, (0, self.max_seq_length - len(attention_mask)), constant_values=0)
+                attention_mask = np.pad(
+                    attention_mask,
+                    (0, self.max_seq_length - len(attention_mask)),
+                    constant_values=0
+                )
+            # Compute length as number of real tokens after truncation
+            orig_len = int(np.sum(attention_mask[:self.max_seq_length]))
         else:
             attention_mask = (input_ids != 0).astype(np.float32)
+            orig_len = int(np.sum(attention_mask))
         
-        return {
+        # Clamp to [1, max_seq_length] to satisfy pack_padded_sequence
+        orig_len = max(1, min(orig_len, self.max_seq_length))
+            
+        item = {
             'input_ids': torch.tensor(input_ids, dtype=torch.long),
             'attention_mask': torch.tensor(attention_mask, dtype=torch.float),
-            'labels': torch.tensor(self.labels[idx], dtype=torch.long)
+            'labels': torch.tensor(self.labels[idx], dtype=torch.long),
+            'lengths': torch.tensor(orig_len, dtype=torch.long)
         }
+        
+        # Add vulnerability features if available
+        if self.vuln_features is not None:
+            item['vuln_features'] = torch.tensor(self.vuln_features[idx], dtype=torch.float)
+        else:
+            # Fallback zero vector if missing but expected (to prevent crashing)
+            # Assuming 26 dims based on config
+            item['vuln_features'] = torch.zeros(26, dtype=torch.float)
+            
+        return item
 
 
 def create_dataloaders(
@@ -186,40 +283,36 @@ def create_dataloaders(
     max_seq_length: int,
     num_workers: int = 4
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """Create train/val/test dataloaders - supports single npz files"""
+    """Create train/val/test dataloaders"""
     
-    # Check for single npz files first
     train_path = Path(data_dir) / 'train.npz'
     val_path = Path(data_dir) / 'val.npz'
     test_path = Path(data_dir) / 'test.npz'
     
     if train_path.exists():
-        print("Found single npz files")
         train_dataset = DevignDataset(str(train_path), max_seq_length)
         val_dataset = DevignDataset(str(val_path), max_seq_length)
         test_dataset = DevignDataset(str(test_path), max_seq_length)
     else:
-        # Fallback to chunked files
-        train_paths = sorted(Path(data_dir).glob('train/*.npz'))
-        val_paths = sorted(Path(data_dir).glob('val/*.npz'))
-        test_paths = sorted(Path(data_dir).glob('test/*.npz'))
-        
-        print(f"Found: {len(train_paths)} train, {len(val_paths)} val, {len(test_paths)} test chunks")
-        raise ValueError("Chunked loading not implemented - use single npz files")
+        raise ValueError(f"Could not find train.npz in {data_dir}")
     
-    print(f"Samples: {len(train_dataset)} train, {len(val_dataset)} val, {len(test_dataset)} test")
+    print(f"Data: {len(train_dataset)} train, {len(val_dataset)} val, {len(test_dataset)} test")
     
+    # Tối ưu DataLoader cho dual T4
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True, 
-        num_workers=num_workers, pin_memory=True, drop_last=True
+        num_workers=num_workers, pin_memory=True, drop_last=True,
+        persistent_workers=num_workers > 0, prefetch_factor=2 if num_workers > 0 else None
     )
     val_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, pin_memory=True
+        num_workers=num_workers, pin_memory=True,
+        persistent_workers=num_workers > 0, prefetch_factor=2 if num_workers > 0 else None
     )
     test_loader = DataLoader(
         test_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, pin_memory=True
+        num_workers=num_workers, pin_memory=True,
+        persistent_workers=num_workers > 0, prefetch_factor=2 if num_workers > 0 else None
     )
     
     return train_loader, val_loader, test_loader
@@ -232,405 +325,344 @@ train_loader, val_loader, test_loader = create_dataloaders(
     config.num_workers
 )
 
-# Test batch
-batch = next(iter(train_loader))
-print(f"\nBatch shapes:")
-print(f"  input_ids: {batch['input_ids'].shape}")
-print(f"  attention_mask: {batch['attention_mask'].shape}")
-print(f"  labels: {batch['labels'].shape}")
-
 # Class distribution
 train_labels = train_loader.dataset.labels
-print(f"\nClass distribution: 0={np.sum(train_labels==0)}, 1={np.sum(train_labels==1)}")
+print(f"Class: neg={np.sum(train_labels==0)}, pos={np.sum(train_labels==1)}")
 
 # %% [markdown]
-# ## 4. BiGRU Model with Attention
+# ## 4. Hybrid BiGRU Model with V2 Features
 
 # %%
-class BiGRUVulnDetector(nn.Module):
-    """Bidirectional GRU with Additive Attention for vulnerability detection
-    
-    Architecture:
-    - Embedding layer with dropout
-    - 2-layer BiGRU
-    - Additive attention pooling
-    - 2-layer MLP classifier with dropout
+class ImprovedHybridBiGRUVulnDetector(nn.Module):
+    """
+    Improved Hybrid BiGRU with:
+    1. Packed sequences support (30-40% speedup)
+    2. Dropout on attention context
+    3. Larger capacity (hidden_dim=192, num_layers=2)
     """
     
-    def __init__(
-        self,
-        vocab_size: int,
-        embed_dim: int = 128,
-        hidden_dim: int = 256,
-        num_layers: int = 2,
-        rnn_dropout: float = 0.3,
-        classifier_dropout: float = 0.5,
-        bidirectional: bool = True,
-        num_classes: int = 2,
-        padding_idx: int = 0
-    ):
+    def __init__(self, config: TrainConfig):
         super().__init__()
+        self.config = config
         
-        self.hidden_dim = hidden_dim
-        self.bidirectional = bidirectional
-        
-        # Embedding with dropout
+        # Embedding
         self.embedding = nn.Embedding(
-            vocab_size, embed_dim, padding_idx=padding_idx
+            config.vocab_size, 
+            config.embed_dim, 
+            padding_idx=0
         )
-        self.embed_dropout = nn.Dropout(0.1)
-        
-        # BiGRU (faster and fewer params than LSTM)
-        self.gru = nn.GRU(
-            embed_dim,
-            hidden_dim,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=rnn_dropout if num_layers > 1 else 0,
-            bidirectional=bidirectional
-        )
-        
-        gru_output_dim = hidden_dim * 2 if bidirectional else hidden_dim
-        
-        # Additive attention
-        self.attention = nn.Sequential(
-            nn.Linear(gru_output_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, 1)
-        )
-        
-        # MLP classifier with strong dropout
-        self.classifier = nn.Sequential(
-            nn.Dropout(classifier_dropout),
-            nn.Linear(gru_output_dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(classifier_dropout),
-            nn.Linear(hidden_dim, num_classes)
-        )
-        
-        self._init_weights()
-    
-    def _init_weights(self):
-        """Initialize weights with Xavier/Kaiming"""
-        for name, param in self.named_parameters():
-            if 'embedding' in name:
-                nn.init.normal_(param, mean=0, std=0.02)
-            elif 'weight_ih' in name:  # GRU input weights
-                nn.init.xavier_uniform_(param)
-            elif 'weight_hh' in name:  # GRU hidden weights
-                nn.init.orthogonal_(param)
-            elif 'bias' in name:
-                nn.init.zeros_(param)
-            elif 'weight' in name and param.dim() > 1:
-                nn.init.xavier_uniform_(param)
-    
-    def forward(
-        self, 
-        input_ids: torch.Tensor, 
-        attention_mask: torch.Tensor
-    ) -> torch.Tensor:
-        # Embed with dropout
-        embeds = self.embedding(input_ids)  # (B, L, E)
-        embeds = self.embed_dropout(embeds)
+        embed_drop_rate = getattr(config, 'embedding_dropout', 0.15)
+        self.embed_dropout = nn.Dropout(embed_drop_rate)
         
         # BiGRU
-        gru_out, _ = self.gru(embeds)  # (B, L, H*2)
-        
-        # Attention pooling
-        attn_weights = self.attention(gru_out)  # (B, L, 1)
-        attn_weights = attn_weights.masked_fill(
-            attention_mask.unsqueeze(-1) == 0, float('-inf')
+        self.gru = nn.GRU(
+            config.embed_dim,
+            config.hidden_dim,
+            num_layers=config.num_layers,
+            bidirectional=config.bidirectional,
+            batch_first=True,
+            dropout=config.rnn_dropout if config.num_layers > 1 else 0.0
         )
-        attn_weights = torch.softmax(attn_weights, dim=1)
         
-        # Weighted sum
-        context = torch.sum(attn_weights * gru_out, dim=1)  # (B, H*2)
+        self.rnn_out_dim = config.hidden_dim * (2 if config.bidirectional else 1)
         
-        # Classify
-        logits = self.classifier(context)  # (B, 2)
+        # Attention mechanism
+        self.attention = nn.Sequential(
+            nn.Linear(self.rnn_out_dim, self.rnn_out_dim // 2),
+            nn.Tanh(),
+            nn.Linear(self.rnn_out_dim // 2, 1, bias=False)
+        )
+        # NEW: Dropout on attention context (regularization)
+        self.context_dropout = nn.Dropout(0.2)
         
+        # Vuln features branch
+        if config.use_vuln_features:
+            self.vuln_bn_in = nn.BatchNorm1d(config.vuln_feature_dim)
+            vuln_hidden = getattr(config, 'vuln_feature_hidden_dim', 64)
+            self.vuln_mlp = nn.Sequential(
+                nn.Linear(config.vuln_feature_dim, vuln_hidden),
+                nn.BatchNorm1d(vuln_hidden),
+                nn.GELU(),
+                nn.Dropout(config.vuln_feature_dropout)
+            )
+            self.combined_dim = self.rnn_out_dim + vuln_hidden
+        else:
+            self.combined_dim = self.rnn_out_dim
+            
+        # Classifier
+        self.classifier = nn.Sequential(
+            nn.Linear(self.combined_dim, self.combined_dim // 2),
+            nn.BatchNorm1d(self.combined_dim // 2),
+            nn.GELU(),
+            nn.Dropout(config.classifier_dropout),
+            nn.Linear(self.combined_dim // 2, 2)
+        )
+        
+    def forward(self, input_ids, attention_mask, vuln_features=None, lengths=None):
+        """
+        Args:
+            input_ids: [B, L]
+            attention_mask: [B, L]
+            vuln_features: [B, F] or None
+            lengths: [B] actual (non-pad) sequence lengths for packed sequences
+        """
+        B, L = input_ids.shape
+        
+        # Embedding
+        embedded = self.embedding(input_ids)  # [B, L, E]
+        embedded = self.embed_dropout(embedded)
+        
+        # GRU with optional packing
+        use_packing = getattr(self.config, 'use_packed_sequences', False)
+        
+        if use_packing and lengths is not None:
+            # Pack sequences (skip padding for 30-40% speedup)
+            lengths_cpu = lengths.cpu()
+            packed = nn.utils.rnn.pack_padded_sequence(
+                embedded, lengths_cpu, batch_first=True, enforce_sorted=False
+            )
+            packed_out, _ = self.gru(packed)
+            rnn_out, _ = nn.utils.rnn.pad_packed_sequence(
+                packed_out, batch_first=True, total_length=L
+            )  # [B, L, D]
+        else:
+            # Standard GRU
+            rnn_out, _ = self.gru(embedded)  # [B, L, D]
+        
+        # Attention
+        att_scores = self.attention(rnn_out)  # [B, L, 1]
+        
+        # Mask attention scores
+        mask = attention_mask.unsqueeze(-1)  # [B, L, 1]
+        att_scores = att_scores.masked_fill(mask == 0, -1e4)
+        
+        att_weights = F.softmax(att_scores, dim=1)
+        
+        # Context vector
+        context_vector = torch.sum(rnn_out * att_weights, dim=1)  # [B, D]
+        context_vector = self.context_dropout(context_vector)  # NEW: regularization
+        
+        # Vuln features
+        if self.config.use_vuln_features and vuln_features is not None:
+            # vuln_features: [B, F]
+            feat_out = self.vuln_bn_in(vuln_features)
+            feat_out = self.vuln_mlp(feat_out)
+            
+            # Concatenate
+            combined = torch.cat([context_vector, feat_out], dim=1)
+        else:
+            combined = context_vector
+            
+        # Classification
+        logits = self.classifier(combined)
         return logits
 
-
-# %%
 # Initialize model
-model = BiGRUVulnDetector(
-    vocab_size=config.vocab_size,
-    embed_dim=config.embed_dim,
-    hidden_dim=config.hidden_dim,
-    num_layers=config.num_layers,
-    rnn_dropout=config.rnn_dropout,
-    classifier_dropout=config.classifier_dropout,
-    bidirectional=config.bidirectional
-)
+model = ImprovedHybridBiGRUVulnDetector(config)
+model.to(DEVICE)
 
-# Multi-GPU with DataParallel
+# DataParallel for multi-GPU
 if N_GPUS > 1:
-    print(f"Using DataParallel on {N_GPUS} GPUs")
     model = nn.DataParallel(model)
 
-model = model.to(DEVICE)
-
-# Count parameters
-total_params = sum(p.numel() for p in model.parameters())
-trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print(f"\nModel parameters: {total_params:,} total, {trainable_params:,} trainable")
+params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"Model: {params:,} params, hidden={config.hidden_dim}, layers={config.num_layers}")
 
 # %% [markdown]
-# ## 5. Training Utilities
+# ## 5. Training Utilities with Threshold Optimization
 
 # %%
-class LabelSmoothingCrossEntropy(nn.Module):
-    """Cross entropy with label smoothing"""
-    
-    def __init__(self, smoothing: float = 0.1, weight: torch.Tensor = None):
-        super().__init__()
-        self.smoothing = smoothing
-        self.weight = weight
-    
-    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        n_classes = pred.size(-1)
-        log_preds = F.log_softmax(pred, dim=-1)
-        
-        # Smooth labels
-        with torch.no_grad():
-            smooth_labels = torch.zeros_like(log_preds)
-            smooth_labels.fill_(self.smoothing / (n_classes - 1))
-            smooth_labels.scatter_(1, target.unsqueeze(1), 1 - self.smoothing)
-        
-        # Weighted loss
-        loss = -smooth_labels * log_preds
-        if self.weight is not None:
-            weight = self.weight[target]
-            loss = loss.sum(dim=-1) * weight
-            return loss.mean()
-        return loss.sum(dim=-1).mean()
-
-
 class EarlyStopping:
-    """Early stopping to prevent overfitting"""
-    
-    def __init__(self, patience: int = 7, min_delta: float = 1e-4):
+    def __init__(self, patience=7, min_delta=0):
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
         self.best_score = None
-        self.should_stop = False
-    
-    def __call__(self, score: float) -> bool:
+        self.early_stop = False
+        self.val_loss_min = np.inf
+
+    def __call__(self, val_metric):
+        score = val_metric
+        
         if self.best_score is None:
             self.best_score = score
         elif score < self.best_score + self.min_delta:
             self.counter += 1
             if self.counter >= self.patience:
-                self.should_stop = True
+                self.early_stop = True
         else:
             self.best_score = score
             self.counter = 0
-        
-        return self.should_stop
-
-
-class MetricsTracker:
-    """Track and compute training metrics"""
-    
-    def __init__(self):
-        self.reset()
-    
-    def reset(self):
-        self.losses = []
-        self.predictions = []
-        self.labels = []
-        self.probabilities = []
-    
-    def update(
-        self, 
-        loss: float, 
-        preds: np.ndarray, 
-        labels: np.ndarray,
-        probs: np.ndarray
-    ):
-        self.losses.append(loss)
-        self.predictions.extend(preds.tolist())
-        self.labels.extend(labels.tolist())
-        self.probabilities.extend(probs.tolist())
-    
-    def compute(self) -> Dict[str, float]:
-        preds = np.array(self.predictions)
-        labels = np.array(self.labels)
-        probs = np.array(self.probabilities)
-        
-        metrics = {
-            'loss': np.mean(self.losses),
-            'accuracy': accuracy_score(labels, preds),
-            'precision': precision_score(labels, preds, zero_division=0),
-            'recall': recall_score(labels, preds, zero_division=0),
-            'f1': f1_score(labels, preds, zero_division=0),
-        }
-        
-        # AUC-ROC (only if both classes present)
-        if len(np.unique(labels)) > 1:
-            metrics['auc_roc'] = roc_auc_score(labels, probs)
+            
+class LabelSmoothingCrossEntropy(nn.Module):
+    def __init__(self, smoothing=0.1, weight=None):
+        super().__init__()
+        self.smoothing = smoothing
+        if weight is not None:
+            self.register_buffer("weight", weight.float())
         else:
-            metrics['auc_roc'] = 0.0
+            self.weight = None
+
+    def forward(self, preds, target):
+        n_classes = preds.size(1)
+        log_preds = F.log_softmax(preds, dim=1)
+        loss = -log_preds.sum(dim=1)
         
-        return metrics
+        weight = self.weight
+        if weight is not None:
+            weight = weight.to(device=preds.device, dtype=preds.dtype)
+            
+        return F.cross_entropy(preds, target, weight=weight, label_smoothing=self.smoothing)
 
-
-def save_checkpoint(
-    model: nn.Module,
-    optimizer: optim.Optimizer,
-    epoch: int,
-    metrics: Dict,
-    path: str
-):
-    """Save model checkpoint"""
-    model_state = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
+def find_optimal_threshold(y_true, y_probs, min_t=0.1, max_t=0.9, step=0.01):
+    """Find probability threshold that maximizes F1 score"""
+    thresholds = np.arange(min_t, max_t + step, step)
+    best_t = 0.5
+    best_f1 = 0.0
     
-    torch.save({
-        'epoch': epoch,
-        'model_state_dict': model_state,
-        'optimizer_state_dict': optimizer.state_dict(),
-        'metrics': metrics,
-        'config': config.to_dict()
-    }, path)
+    # Vectorized calculation could be faster but loop is clear
+    for t in thresholds:
+        y_pred = (y_probs >= t).astype(int)
+        f1 = f1_score(y_true, y_pred, zero_division=0)
+        if f1 > best_f1:
+            best_f1 = f1
+            best_t = t
+            
+    return best_t, best_f1
 
-
-def load_checkpoint(path: str, model: nn.Module, optimizer: optim.Optimizer = None):
-    """Load model checkpoint"""
-    checkpoint = torch.load(path, map_location=DEVICE, weights_only=False)
-    
-    if isinstance(model, nn.DataParallel):
-        model.module.load_state_dict(checkpoint['model_state_dict'])
-    else:
-        model.load_state_dict(checkpoint['model_state_dict'])
-    
-    if optimizer is not None:
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    
-    return checkpoint['epoch'], checkpoint['metrics']
-
-# %% [markdown]
-# ## 6. Training Loop with AMP & Gradient Accumulation
-
-# %%
-def train_epoch(
-    model: nn.Module,
-    loader: DataLoader,
-    optimizer: optim.Optimizer,
-    criterion: nn.Module,
-    scaler: GradScaler,
-    grad_clip: float,
-    accumulation_steps: int = 1,
-    use_amp: bool = True
-) -> Dict[str, float]:
-    """Train one epoch with AMP and gradient accumulation"""
+def train_epoch(model, loader, optimizer, criterion, scaler, grad_clip, accum_steps, use_amp):
     model.train()
-    tracker = MetricsTracker()
+    total_loss = 0
+    all_preds, all_labels = [], []
     
     optimizer.zero_grad()
     
-    pbar = tqdm(loader, desc="Training", leave=False)
-    for batch_idx, batch in enumerate(pbar):
-        input_ids = batch['input_ids'].to(DEVICE)
-        attention_mask = batch['attention_mask'].to(DEVICE)
-        labels = batch['labels'].to(DEVICE)
+    for i, batch in enumerate(tqdm(loader, desc="Training", leave=False)):
+        input_ids = batch['input_ids'].to(DEVICE, non_blocking=True)
+        attention_mask = batch['attention_mask'].to(DEVICE, non_blocking=True)
+        labels = batch['labels'].to(DEVICE, non_blocking=True)
+        vuln_features = batch['vuln_features'].to(DEVICE, non_blocking=True) if 'vuln_features' in batch else None
+        lengths = batch['lengths'].to(DEVICE, non_blocking=True)
         
-        # Forward with AMP
-        with autocast(enabled=use_amp):
-            logits = model(input_ids, attention_mask)
+        with autocast(device_type='cuda', enabled=use_amp):
+            logits = model(input_ids, attention_mask, vuln_features, lengths)
             loss = criterion(logits, labels)
-            loss = loss / accumulation_steps  # Scale for accumulation
-        
-        # Backward with scaler
+            loss = loss / accum_steps
+            
         scaler.scale(loss).backward()
         
-        # Step optimizer every accumulation_steps
-        if (batch_idx + 1) % accumulation_steps == 0:
-            if grad_clip > 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            
+        if (i + 1) % accum_steps == 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
+            
+        total_loss += loss.item() * accum_steps
         
-        # Track metrics (use unscaled loss for logging)
-        with torch.no_grad():
-            probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
-            preds = logits.argmax(dim=1).cpu().numpy()
+        preds = logits.argmax(dim=1).cpu().numpy()
+        all_preds.extend(preds)
+        all_labels.extend(labels.cpu().numpy())
         
-        tracker.update(
-            loss.item() * accumulation_steps,  # Unscale for logging
-            preds,
-            labels.cpu().numpy(),
-            probs
-        )
+    avg_loss = total_loss / len(loader)
+    f1 = f1_score(all_labels, all_preds, zero_division=0)
+    try:
+        auc_roc = roc_auc_score(all_labels, all_preds)
+    except:
+        auc_roc = 0.5
         
-        pbar.set_postfix({'loss': f'{loss.item() * accumulation_steps:.4f}'})
-    
-    return tracker.compute()
-
+    return {
+        'loss': avg_loss,
+        'f1': f1,
+        'auc_roc': auc_roc
+    }
 
 @torch.no_grad()
-def evaluate(
-    model: nn.Module,
-    loader: DataLoader,
-    criterion: nn.Module,
-    use_amp: bool = True
-) -> Dict[str, float]:
-    """Evaluate model"""
+def evaluate(model, loader, criterion, use_amp, threshold=None, find_threshold=False):
     model.eval()
-    tracker = MetricsTracker()
+    total_loss = 0
+    all_labels = []
+    all_probs = []
     
     for batch in tqdm(loader, desc="Evaluating", leave=False):
-        input_ids = batch['input_ids'].to(DEVICE)
-        attention_mask = batch['attention_mask'].to(DEVICE)
-        labels = batch['labels'].to(DEVICE)
+        input_ids = batch['input_ids'].to(DEVICE, non_blocking=True)
+        attention_mask = batch['attention_mask'].to(DEVICE, non_blocking=True)
+        labels = batch['labels'].to(DEVICE, non_blocking=True)
+        vuln_features = batch['vuln_features'].to(DEVICE, non_blocking=True) if 'vuln_features' in batch else None
+        lengths = batch['lengths'].to(DEVICE, non_blocking=True)
         
-        with autocast(enabled=use_amp):
-            logits = model(input_ids, attention_mask)
+        with autocast(device_type='cuda', enabled=use_amp):
+            logits = model(input_ids, attention_mask, vuln_features, lengths)
             loss = criterion(logits, labels)
+            
+        total_loss += loss.item()
         
         probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
-        preds = logits.argmax(dim=1).cpu().numpy()
+        all_labels.extend(labels.cpu().numpy())
+        all_probs.extend(probs)
         
-        tracker.update(
-            loss.item(),
-            preds,
-            labels.cpu().numpy(),
-            probs
-        )
+    avg_loss = total_loss / len(loader)
+    all_labels = np.array(all_labels)
+    all_probs = np.array(all_probs)
     
-    return tracker.compute()
+    # Determine threshold
+    best_t = 0.5
+    if find_threshold:
+        best_t, best_f1 = find_optimal_threshold(all_labels, all_probs)
+        used_t = best_t
+    elif threshold is not None:
+        used_t = threshold
+    else:
+        used_t = 0.5
+        
+    # Apply threshold
+    preds = (all_probs >= used_t).astype(int)
+    
+    # Metrics
+    accuracy = accuracy_score(all_labels, preds)
+    precision = precision_score(all_labels, preds, zero_division=0)
+    recall = recall_score(all_labels, preds, zero_division=0)
+    f1 = f1_score(all_labels, preds, zero_division=0)
+    try:
+        auc_roc = roc_auc_score(all_labels, all_probs)
+    except:
+        auc_roc = 0.5
+        
+    return {
+        'loss': avg_loss,
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'auc_roc': auc_roc,
+        'best_threshold': best_t if find_threshold else used_t
+    }
 
+# %% [markdown]
+# ## 6. Main Training Loop
 
 # %%
-def train(
-    model: nn.Module,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    config: TrainConfig
-) -> Dict:
-    """Full training loop with all best practices"""
+def train(model, train_loader, val_loader, config):
+    # Calculate class weights
+    all_labels = []
+    for batch in train_loader:
+        all_labels.extend(batch['labels'].numpy())
     
-    # Class weights for imbalanced data
-    labels = train_loader.dataset.labels
-    class_counts = np.bincount(labels)
-    class_weights = torch.tensor(
-        len(labels) / (len(class_counts) * class_counts),
-        dtype=torch.float
-    ).to(DEVICE)
-    print(f"Class weights: {class_weights.cpu().numpy()}")
+    neg_count = np.sum(np.array(all_labels) == 0)
+    pos_count = np.sum(np.array(all_labels) == 1)
     
-    # Loss with label smoothing
+    # Slight boost to minority class if imbalanced
+    ratio = float(neg_count) / float(pos_count)
+    weight = torch.tensor([1.0, ratio], dtype=torch.float32, device=DEVICE)
+    
+    # Loss function
     if config.label_smoothing > 0:
         criterion = LabelSmoothingCrossEntropy(
             smoothing=config.label_smoothing, 
-            weight=class_weights
+            weight=weight
         )
     else:
-        criterion = nn.CrossEntropyLoss(weight=class_weights)
+        criterion = nn.CrossEntropyLoss(weight=weight)
     
     # Optimizer
     optimizer = optim.AdamW(
@@ -654,21 +686,17 @@ def train(
             optimizer, mode='max', factor=0.5, patience=3
         )
     
-    # AMP scaler
     scaler = GradScaler(enabled=config.use_amp)
-    
     early_stopping = EarlyStopping(config.patience, config.min_delta)
     
     history = {'train': [], 'val': []}
     best_f1 = 0.0
     best_epoch = 0
+    best_threshold_overall = 0.5
     
-    print("\n" + "="*60)
-    print("Starting training...")
-    print(f"  Effective batch size: {config.batch_size * config.accumulation_steps}")
-    print(f"  Mixed precision: {config.use_amp}")
-    print(f"  Scheduler: {config.scheduler_type}")
-    print("="*60)
+    print("\n" + "="*50)
+    print(f"Training: batch={config.batch_size}, epochs={config.max_epochs}, AMP={config.use_amp}")
+    print("="*50)
     
     for epoch in range(1, config.max_epochs + 1):
         epoch_start = time.time()
@@ -679,8 +707,11 @@ def train(
             config.grad_clip, config.accumulation_steps, config.use_amp
         )
         
-        # Validate
-        val_metrics = evaluate(model, val_loader, criterion, config.use_amp)
+        # Validate (with dynamic threshold search)
+        val_metrics = evaluate(
+            model, val_loader, criterion, config.use_amp,
+            find_threshold=config.use_optimal_threshold
+        )
         
         epoch_time = time.time() - epoch_start
         
@@ -689,74 +720,83 @@ def train(
         history['val'].append(val_metrics)
         
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"\nEpoch {epoch}/{config.max_epochs} ({epoch_time:.1f}s) - LR: {current_lr:.2e}")
-        print(f"  Train - Loss: {train_metrics['loss']:.4f}, F1: {train_metrics['f1']:.4f}, AUC: {train_metrics['auc_roc']:.4f}")
-        print(f"  Val   - Loss: {val_metrics['loss']:.4f}, F1: {val_metrics['f1']:.4f}, AUC: {val_metrics['auc_roc']:.4f}")
+        val_t = val_metrics['best_threshold']
         
-        # Learning rate scheduling
+        print(f"Ep {epoch:2d}/{config.max_epochs} ({epoch_time:.0f}s) | Train: L={train_metrics['loss']:.3f} F1={train_metrics['f1']:.3f} | Val: L={val_metrics['loss']:.3f} F1={val_metrics['f1']:.3f} AUC={val_metrics['auc_roc']:.3f} T={val_t:.2f}")
+        
+        # Scheduler step
         if config.scheduler_type == 'plateau':
             scheduler.step(val_metrics['f1'])
-        # OneCycleLR steps per batch in train_epoch via step() - but we step per epoch here for simplicity
         
         # Save best model
         if val_metrics['f1'] > best_f1:
             best_f1 = val_metrics['f1']
             best_epoch = epoch
-            save_checkpoint(
-                model, optimizer, epoch, val_metrics,
-                os.path.join(MODEL_DIR, 'best_model.pt')
-            )
-            print(f"  ✓ New best model saved (F1: {best_f1:.4f})")
+            best_threshold_overall = val_t
+            
+            save_dict = {
+                'epoch': epoch,
+                'model_state_dict': model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_metrics': val_metrics,
+                'config': config.to_dict(),
+                'best_threshold': best_threshold_overall
+            }
+            torch.save(save_dict, os.path.join(MODEL_DIR, 'best_model.pt'))
+            print(f"  ★ Best F1={best_f1:.4f}")
         
         # Regular checkpoint
         if epoch % config.save_every == 0:
-            save_checkpoint(
-                model, optimizer, epoch, val_metrics,
-                os.path.join(MODEL_DIR, f'checkpoint_epoch_{epoch}.pt')
-            )
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict(),
+                'best_threshold': val_t
+            }, os.path.join(MODEL_DIR, f'checkpoint_epoch_{epoch}.pt'))
         
         # Early stopping
         if early_stopping(val_metrics['f1']):
-            print(f"\nEarly stopping at epoch {epoch}")
+            print(f"Early stopping at epoch {epoch}")
             break
     
-    print("\n" + "="*60)
-    print(f"Training complete! Best F1: {best_f1:.4f} at epoch {best_epoch}")
-    print("="*60)
+    print(f"\n{'='*50}")
+    print(f"Done! Best F1={best_f1:.4f} at epoch {best_epoch} (T={best_threshold_overall:.2f})")
+    print("="*50)
     
     # Save history
     with open(os.path.join(LOG_DIR, 'training_history.json'), 'w') as f:
         json.dump(history, f, indent=2)
     
-    return history
+    return history, best_threshold_overall
 
 # %% [markdown]
 # ## 7. Run Training
 
 # %%
-history = train(model, train_loader, val_loader, config)
+history, best_threshold = train(model, train_loader, val_loader, config)
 
 # %% [markdown]
 # ## 8. Final Evaluation on Test Set
 
 # %%
 # Load best model
-print("Loading best model for evaluation...")
-load_checkpoint(os.path.join(MODEL_DIR, 'best_model.pt'), model)
+checkpoint = torch.load(os.path.join(MODEL_DIR, 'best_model.pt'), weights_only=False)
+
+if isinstance(model, nn.DataParallel):
+    model.module.load_state_dict(checkpoint['model_state_dict'])
+else:
+    model.load_state_dict(checkpoint['model_state_dict'])
 
 # Evaluate on test set
-class_weights = None  # Use unweighted for final eval
 criterion = nn.CrossEntropyLoss()
-test_metrics = evaluate(model, test_loader, criterion, config.use_amp)
+test_metrics = evaluate(
+    model, test_loader, criterion, config.use_amp, 
+    threshold=best_threshold
+)
 
-print("\n" + "="*60)
-print("TEST SET RESULTS")
-print("="*60)
-print(f"Accuracy:  {test_metrics['accuracy']:.4f}")
-print(f"Precision: {test_metrics['precision']:.4f}")
-print(f"Recall:    {test_metrics['recall']:.4f}")
-print(f"F1 Score:  {test_metrics['f1']:.4f}")
-print(f"AUC-ROC:   {test_metrics['auc_roc']:.4f}")
+print(f"\n{'='*50}")
+print("TEST RESULTS")
+print(f"{'='*50}")
+print(f"Acc={test_metrics['accuracy']:.4f} P={test_metrics['precision']:.4f} R={test_metrics['recall']:.4f} F1={test_metrics['f1']:.4f} AUC={test_metrics['auc_roc']:.4f} T={best_threshold:.2f}")
 
 # %%
 # Detailed classification report
@@ -766,21 +806,22 @@ def get_predictions(model, loader, use_amp=True):
     all_preds, all_labels, all_probs = [], [], []
     
     for batch in loader:
-        input_ids = batch['input_ids'].to(DEVICE)
-        attention_mask = batch['attention_mask'].to(DEVICE)
+        input_ids = batch['input_ids'].to(DEVICE, non_blocking=True)
+        attention_mask = batch['attention_mask'].to(DEVICE, non_blocking=True)
+        vuln_features = batch['vuln_features'].to(DEVICE, non_blocking=True) if 'vuln_features' in batch else None
+        lengths = batch['lengths'].to(DEVICE, non_blocking=True)
         
-        with autocast(enabled=use_amp):
-            logits = model(input_ids, attention_mask)
+        with autocast(device_type='cuda', enabled=use_amp):
+            logits = model(input_ids, attention_mask, vuln_features, lengths)
         probs = torch.softmax(logits, dim=1)[:, 1]
-        preds = logits.argmax(dim=1)
         
-        all_preds.extend(preds.cpu().numpy())
         all_labels.extend(batch['labels'].numpy())
         all_probs.extend(probs.cpu().numpy())
     
-    return np.array(all_preds), np.array(all_labels), np.array(all_probs)
+    return np.array(all_labels), np.array(all_probs)
 
-preds, labels, probs = get_predictions(model, test_loader, config.use_amp)
+labels, probs = get_predictions(model, test_loader, config.use_amp)
+preds = (probs >= best_threshold).astype(int)
 
 print("\nClassification Report:")
 print(classification_report(labels, preds, target_names=['Non-Vulnerable', 'Vulnerable']))
@@ -840,37 +881,10 @@ final_export = {
     'model_state_dict': model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict(),
     'config': config.to_dict(),
     'test_metrics': test_metrics,
+    'best_threshold': best_threshold,
     'timestamp': datetime.now().isoformat(),
-    'model_type': 'BiGRU'
+    'model_type': 'HybridBiGRU'
 }
 torch.save(final_export, os.path.join(MODEL_DIR, 'bigru_vuln_detector_final.pt'))
-print(f"\nFinal model exported to {MODEL_DIR}/bigru_vuln_detector_final.pt")
-
-# %% [markdown]
-# ## Summary
-# 
-# **BiGRU Model Improvements over LSTM baseline:**
-# 
-# 1. **Architecture**:
-#    - BiGRU (25% fewer params than BiLSTM)
-#    - Embedding dropout (0.1)
-#    - Strong classifier dropout (0.5)
-#    - GELU activation
-# 
-# 2. **Training**:
-#    - Mixed precision (AMP) for faster training
-#    - Gradient accumulation (effective batch 128)
-#    - OneCycleLR for better convergence
-#    - Label smoothing (0.05) for noisy labels
-#    - Weight decay (5e-3) for regularization
-# 
-# 3. **Hyperparameters** (optimized for vocab=266, 21K samples):
-#    - embed_dim: 128 (was 256)
-#    - hidden_dim: 256 (BiGRU output = 512)
-#    - weight_decay: 5e-3 (was 1e-5)
-#    - dropout: 0.3 RNN, 0.5 classifier (was 0.3)
-# 
-# **Next Steps:**
-# 1. Try CodeBERT/GraphCodeBERT for better performance
-# 2. Add graph-based features (CFG/DFG)
-# 3. Ensemble sequence + graph models
+print(f"Model saved to {MODEL_DIR}/bigru_vuln_detector_final.pt")
+None  # Suppress cell output

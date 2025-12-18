@@ -43,6 +43,7 @@ from src.tokenization.normalization import CodeNormalizer, NormalizationMaps
 from src.tokenization.vocab import Vocabulary, VocabBuilder, VocabConfig
 from src.utils.checkpoint import CheckpointManager
 from src.utils.logging import get_logger
+from src.vuln.vuln_lines import extract_vul_line_numbers
 
 
 class StepStatus(Enum):
@@ -447,7 +448,14 @@ class PreprocessPipeline:
         self.logger.info(f"Loaded {total_processed} samples for split '{split}'")
     
     def _run_step_vuln_features(self, split: str) -> None:
-        """Step 1: Extract vulnerability features for each chunk"""
+        """Step 1: Extract vulnerability features for each chunk
+        
+        Uses get_vulnerability_summary for rich analysis including:
+        - risk_score (0-1 float)
+        - risk_level (none/low/medium/high)
+        - has_vulnerabilities flag
+        - Individual feature counts as vf_* columns
+        """
         raw_chunks = list_chunks(str(self.output_dir), 'raw', 'parquet')
         
         if not raw_chunks:
@@ -456,25 +464,45 @@ class PreprocessPipeline:
         chunk_idx = self._get_resume_chunk('vuln_features', split)
         total_processed = 0
         
+        vuln_feature_keys = None
+        
         for i, chunk_path_str in enumerate(raw_chunks):
             if i < chunk_idx:
                 continue
             
             chunk_df = load_chunk(chunk_path_str)
             
-            # Extract features for each sample
-            vuln_features_list = []
+            risk_scores = []
+            risk_levels = []
+            has_vulns = []
+            feature_values = {}
+            
             for _, row in chunk_df.iterrows():
                 code = row.get('func', '') or row.get('func_clean', '')
-                features = extract_vuln_features(code, self.vuln_dict)
-                vuln_features_list.append(features)
+                
+                summary = get_vulnerability_summary(code, self.vuln_dict)
+                
+                risk_scores.append(summary.get('risk_score', 0.0))
+                risk_levels.append(summary.get('risk_level', 'none'))
+                has_vulns.append(summary.get('has_vulnerabilities', False))
+                
+                features = summary.get('features', {})
+                
+                if vuln_feature_keys is None:
+                    vuln_feature_keys = list(features.keys())
+                    for key in vuln_feature_keys:
+                        feature_values[key] = []
+                
+                for key in vuln_feature_keys:
+                    feature_values[key].append(features.get(key, 0))
             
-            # Add features to dataframe
-            features_df = pd.DataFrame(vuln_features_list)
-            for col in features_df.columns:
-                chunk_df[f'vuln_{col}'] = features_df[col].values
+            chunk_df['vuln_risk_score'] = risk_scores
+            chunk_df['vuln_risk_level'] = risk_levels
+            chunk_df['vuln_has_issues'] = has_vulns
             
-            # Save
+            for key in (vuln_feature_keys or []):
+                chunk_df[f'vf_{key}'] = feature_values[key]
+            
             out_path = chunk_path(str(self.output_dir), 'vuln_features', i, 'parquet')
             save_chunk(chunk_df, out_path)
             
@@ -486,10 +514,10 @@ class PreprocessPipeline:
                 samples_processed=total_processed
             )
             
-            self.logger.info(f"Processed vuln features for chunk {i}")
+            self.logger.info(f"Processed vuln features for chunk {i}: {sum(has_vulns)}/{len(has_vulns)} with issues")
             
             if self.config.gc_after_chunk:
-                del chunk_df, features_df
+                del chunk_df, risk_scores, risk_levels, has_vulns, feature_values
                 gc.collect()
     
     def _run_step_ast(self, split: str) -> None:
@@ -661,8 +689,7 @@ class PreprocessPipeline:
                     except:
                         vul_lines_raw = {}
                 
-                focus_lines = list(vul_lines_raw.keys()) if isinstance(vul_lines_raw, dict) else []
-                focus_lines = [int(l) for l in focus_lines if str(l).isdigit()]
+                focus_lines = extract_vul_line_numbers(vul_lines_raw)
                 
                 parse_result = self.parser.parse_with_fallback(code)
                 if parse_result and parse_result.nodes:
@@ -724,10 +751,25 @@ class PreprocessPipeline:
             
             chunk_df = load_chunk(chunk_path_str)
             
+            # Try to load precomputed graphs
+            cfg_objects = None
+            dfg_objects = None
+            try:
+                cfg_pkl = chunk_path(str(self.output_dir), 'cfg_objects', i, 'pkl')
+                dfg_pkl = chunk_path(str(self.output_dir), 'dfg_objects', i, 'pkl')
+                if Path(cfg_pkl).exists():
+                    cfg_objects = load_pickle(cfg_pkl)
+                    self.logger.debug(f"Loaded precomputed CFG objects for chunk {i}")
+                if Path(dfg_pkl).exists():
+                    dfg_objects = load_pickle(dfg_pkl)
+                    self.logger.debug(f"Loaded precomputed DFG objects for chunk {i}")
+            except Exception as e:
+                self.logger.warning(f"Could not load precomputed graphs for chunk {i}: {e}")
+            
             sliced_codes = []
             slice_stats = []
             
-            for _, row in chunk_df.iterrows():
+            for row_idx, (_, row) in enumerate(chunk_df.iterrows()):
                 code = row.get('func', '') or row.get('func_clean', '')
                 
                 # Get vulnerability lines
@@ -739,16 +781,23 @@ class PreprocessPipeline:
                     except:
                         vul_lines_raw = {}
                 
-                criterion_lines = list(vul_lines_raw.keys()) if isinstance(vul_lines_raw, dict) else []
-                criterion_lines = [int(l) for l in criterion_lines if str(l).isdigit()]
+                criterion_lines = extract_vul_line_numbers(vul_lines_raw)
                 
                 # Default to all lines if no vuln lines
                 if not criterion_lines:
                     lines = code.split('\n')
                     criterion_lines = list(range(1, len(lines) + 1))
                 
-                # Perform slicing
-                slice_result = self.slicer.slice(code, criterion_lines)
+                # Get precomputed graphs if available
+                cfg = None
+                dfg = None
+                if cfg_objects and row_idx < len(cfg_objects) and cfg_objects[row_idx]:
+                    cfg = deserialize_cfg(cfg_objects[row_idx])
+                if dfg_objects and row_idx < len(dfg_objects) and dfg_objects[row_idx]:
+                    dfg = deserialize_dfg(dfg_objects[row_idx])
+                
+                # Perform slicing with precomputed graphs (or rebuild if not available)
+                slice_result = self.slicer.slice(code, criterion_lines, cfg=cfg, dfg=dfg)
                 
                 sliced_codes.append(slice_result.code)
                 slice_stats.append({
