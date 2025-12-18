@@ -65,10 +65,17 @@ class CodeSlicer:
         self.config = config or SliceConfig()
         self.parser = CFamilyParser()
     
-    def slice(self, code: str, criterion_lines: List[int]) -> CodeSlice:
+    def slice(self, code: str, criterion_lines: List[int], 
+              cfg: Optional[CFG] = None, dfg: Optional[DFG] = None) -> CodeSlice:
         """
         Main slicing function.
         Falls back to window-based if AST/graphs fail.
+        
+        Args:
+            code: Source code to slice
+            criterion_lines: Lines to use as slicing criterion
+            cfg: Optional precomputed CFG (if None, will be built internally)
+            dfg: Optional precomputed DFG (if None, will be built internally)
         """
         if not code or not code.strip():
             return self._empty_slice(code, criterion_lines)
@@ -88,17 +95,19 @@ class CodeSlicer:
         
         # Try graph-based slicing
         try:
-            parse_result = self.parser.parse_with_fallback(processed_code)
-            if parse_result is None or not parse_result.nodes:
-                return self.window_slice(processed_code, valid_criterion)
-            
-            # Build CFG
-            cfg_builder = CFGBuilder()
-            cfg = cfg_builder.build(parse_result)
-            
-            # Build DFG
-            dfg_builder = DFGBuilder()
-            dfg = dfg_builder.build(parse_result, focus_lines=valid_criterion)
+            # Only parse and build graphs if not provided
+            if cfg is None and dfg is None:
+                parse_result = self.parser.parse_with_fallback(processed_code)
+                if parse_result is None or not parse_result.nodes:
+                    return self.window_slice(processed_code, valid_criterion)
+                
+                # Build CFG
+                cfg_builder = CFGBuilder()
+                cfg = cfg_builder.build(parse_result)
+                
+                # Build DFG
+                dfg_builder = DFGBuilder()
+                dfg = dfg_builder.build(parse_result, focus_lines=valid_criterion)
             
             if cfg is None and dfg is None:
                 return self.window_slice(processed_code, valid_criterion)

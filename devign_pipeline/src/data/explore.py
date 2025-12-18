@@ -9,6 +9,8 @@ from typing import Dict, List, Any, Tuple, Optional, TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from src.vuln.vuln_lines import extract_vul_line_numbers
+
 if TYPE_CHECKING:
     from .loader import DevignLoader
 
@@ -58,22 +60,14 @@ def compute_statistics(df: pd.DataFrame) -> Dict[str, Any]:
     
     if 'vul_lines' in df.columns:
         def count_vul_lines(val: Any) -> int:
-            if val is None:
+            if val is None or (isinstance(val, float) and pd.isna(val)):
                 return 0
-            try:
-                if pd.isna(val):
-                    return 0
-            except (ValueError, TypeError):
-                pass
-            if isinstance(val, dict):
-                return len(val)
             if isinstance(val, str):
                 try:
-                    parsed = json.loads(val)
-                    return len(parsed) if isinstance(parsed, dict) else 0
-                except json.JSONDecodeError:
+                    val = json.loads(val)
+                except:
                     return 0
-            return 0
+            return len(extract_vul_line_numbers(val))
         
         vul_counts = df['vul_lines'].apply(count_vul_lines)
         stats['vul_lines'] = {
