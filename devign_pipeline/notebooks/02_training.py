@@ -186,7 +186,55 @@ class LargeTrainConfig(TrainConfig):
         return {k: v for k, v in self.__class__.__dict__.items() 
                 if not k.startswith('_') and not callable(v)}
 
-config = LargeTrainConfig()
+
+class RegularizedConfig(LargeTrainConfig):
+    """
+    Regularized config to reduce overfitting based on Oracle analysis.
+    
+    Key changes from LargeTrainConfig:
+    - Reduced max_epochs (25) - Oracle showed best at epoch 14-16
+    - Lower weight_decay (1e-4) - avoid over-regularization
+    - Increased dropout slightly for better generalization
+    - Shorter patience for early stopping (4)
+    - Lower learning rate (3e-4) for more stable convergence
+    """
+    # Training - reduced epochs, stop earlier
+    max_epochs: int = 25
+    patience: int = 4
+    learning_rate: float = 3e-4
+    max_lr: float = 1.0e-3
+    
+    # Weight decay - reduced from 2e-2 to 1e-4 (per Oracle recommendation)
+    weight_decay: float = 1e-4
+    
+    # Dropout - slightly increased for better generalization
+    rnn_dropout: float = 0.4           # Keep same
+    embedding_dropout: float = 0.25    # UP from 0.2
+    classifier_dropout: float = 0.5    # Keep same
+    vuln_feature_dropout: float = 0.30 # UP from 0.25
+    
+    # Label smoothing - reduced to avoid over-smoothing
+    label_smoothing: float = 0.05
+    
+    # Scheduler settings
+    scheduler_type: str = 'plateau'
+    scheduler_patience: int = 2        # NEW: for ReduceLROnPlateau
+    scheduler_factor: float = 0.5      # NEW: LR reduction factor
+    scheduler_min_lr: float = 1e-6     # NEW: minimum LR
+    
+    # Data
+    batch_size: int = 96
+    max_seq_length: int = 512
+    accumulation_steps: int = 1
+    
+    # Packed sequences
+    use_packed_sequences: bool = True
+
+    def to_dict(self) -> Dict:
+        return {k: v for k, v in self.__class__.__dict__.items() 
+                if not k.startswith('_') and not callable(v)}
+
+config = RegularizedConfig()
 
 # %% [markdown]
 # ## 3. Dataset & DataLoader
@@ -473,24 +521,34 @@ print(f"Model: {params:,} params, hidden={config.hidden_dim}, layers={config.num
 
 # %%
 class EarlyStopping:
-    def __init__(self, patience=7, min_delta=0):
+    """
+    Early stopping for maximizing metrics (e.g., F1, AUC-ROC).
+    Stops training when metric doesn't improve for `patience` epochs.
+    """
+    def __init__(self, patience=7, min_delta=0, verbose=True):
         self.patience = patience
         self.min_delta = min_delta
+        self.verbose = verbose
         self.counter = 0
         self.best_score = None
         self.early_stop = False
-        self.val_loss_min = np.inf
 
     def __call__(self, val_metric):
         score = val_metric
         
         if self.best_score is None:
             self.best_score = score
-        elif score < self.best_score + self.min_delta:
+            if self.verbose:
+                print(f"  EarlyStopping: initialized with score={score:.4f}")
+        elif score <= self.best_score + self.min_delta:
             self.counter += 1
+            if self.verbose:
+                print(f"  EarlyStopping: no improvement ({self.counter}/{self.patience})")
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
+            if self.verbose:
+                print(f"  EarlyStopping: improved {self.best_score:.4f} → {score:.4f}")
             self.best_score = score
             self.counter = 0
             
@@ -682,8 +740,18 @@ def train(model, train_loader, val_loader, config):
             anneal_strategy='cos'
         )
     else:
+        # ReduceLROnPlateau - monitors val_auc_roc for stability
+        scheduler_patience = getattr(config, 'scheduler_patience', 2)
+        scheduler_factor = getattr(config, 'scheduler_factor', 0.5)
+        scheduler_min_lr = getattr(config, 'scheduler_min_lr', 1e-6)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='max', factor=0.5, patience=3
+            optimizer, 
+            mode='max', 
+            factor=scheduler_factor, 
+            patience=scheduler_patience,
+            threshold=1e-3,
+            min_lr=scheduler_min_lr,
+            verbose=True
         )
     
     scaler = GradScaler(enabled=config.use_amp)
@@ -724,11 +792,11 @@ def train(model, train_loader, val_loader, config):
         
         print(f"Ep {epoch:2d}/{config.max_epochs} ({epoch_time:.0f}s) | Train: L={train_metrics['loss']:.3f} F1={train_metrics['f1']:.3f} | Val: L={val_metrics['loss']:.3f} F1={val_metrics['f1']:.3f} AUC={val_metrics['auc_roc']:.3f} T={val_t:.2f}")
         
-        # Scheduler step
+        # Scheduler step - use AUC-ROC for more stable monitoring
         if config.scheduler_type == 'plateau':
-            scheduler.step(val_metrics['f1'])
+            scheduler.step(val_metrics['auc_roc'])
         
-        # Save best model
+        # Save best model (based on F1)
         if val_metrics['f1'] > best_f1:
             best_f1 = val_metrics['f1']
             best_epoch = epoch
