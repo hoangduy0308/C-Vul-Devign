@@ -826,8 +826,118 @@ class AdvancedConfigV2(FinalConfig):
         return cfg
 
 
-# Use AdvancedConfigV2 for this training run (Oracle-optimized)
-config = AdvancedConfigV2()
+class AdvancedConfigV3(FinalConfig):
+    """
+    AdvancedConfigV3 - Oracle-optimized after V2 regression analysis.
+    Target: F1 ≥ 75%, AUC-ROC ≥ 85%
+    
+    V2 Results (REGRESSION):
+    - F1 ~66% (DOWN from 72% baseline)
+    - AUC ~80% (DOWN from 82% baseline)
+    - Precision ~75-81% (UP from 62%)
+    - Recall ~50-59% (DOWN from 86%) ← COLLAPSED
+    
+    Root Cause: Precision-focus changes (F0.5, precision_constrained, softer pos weight)
+    were too aggressive → recall collapsed → F1 dropped despite higher precision.
+    
+    Oracle Recommendations for V3:
+    1. RESTORE model capacity: hidden_dim=192, heads=6 (undo V2 reduction)
+    2. REDUCE dropout: 0.25-0.30 (model was underpowered)
+    3. BRING BACK Focal Loss (milder gamma=1.5) for hard positives
+    4. STRONGER positive class weight (undo softening)
+    5. RECALL-CONSTRAINED threshold: maximize F1 subject to recall ≥ 0.80
+    6. F1 objective instead of F0.5 (undo precision bias)
+    """
+    
+    # --- Model Capacity RESTORED (Oracle: undo V2 reduction) ---
+    hidden_dim: int = 192                     # UP from 160 - more capacity
+    num_attention_heads: int = 6              # UP from 4 - richer attention
+    vuln_feature_hidden_dim: int = 96         # UP from 80
+    
+    # --- Dropout REDUCED (Oracle: model underpowered in V2) ---
+    classifier_dropout: float = 0.28          # DOWN from 0.35
+    rnn_dropout: float = 0.28                 # DOWN from 0.35
+    embedding_dropout: float = 0.12           # DOWN from 0.15
+    attention_dropout: float = 0.12           # DOWN from 0.15
+    vuln_feature_dropout: float = 0.20        # DOWN from 0.25
+    
+    # --- Class weighting RESTORED (Oracle: undo V2 softening) ---
+    # V2 was neg_boost=1.10, pos_reduce=0.90 → too soft, killed recall
+    # Restore baseline-like weighting to recover recall
+    use_precision_focused_weight: bool = True
+    neg_weight_boost: float = 1.0             # NEUTRAL (was 1.10)
+    pos_weight_reduce: float = 1.0            # NEUTRAL (was 0.90)
+    
+    # --- Focal Loss RESTORED with milder gamma ---
+    # Oracle: bring back focal loss for hard positive mining
+    use_focal_weight: bool = True             # ENABLED
+    focal_gamma: float = 1.5                  # Milder than V1's 2.0
+    
+    # --- Label smoothing REDUCED for sharper boundary ---
+    label_smoothing: float = 0.02             # DOWN from 0.03
+    label_smoothing_warmup_epochs: int = 8    # Early epochs only
+    
+    # --- Token augmentation (moderate) ---
+    use_token_augmentation: bool = True
+    token_dropout_prob: float = 0.08          # UP from 0.05 - more augmentation
+    token_mask_prob: float = 0.04             # UP from 0.03
+    
+    # --- Learning rate / scheduler ---
+    scheduler_type: str = 'cosine'            # Cosine annealing for smooth decay
+    learning_rate: float = 4e-4               # UP from 3e-4
+    max_lr: float = 1.5e-3                    # UP from 1e-3
+    warmup_epochs: int = 2                    # Quick warmup
+    
+    # --- SWA timing (Oracle: start after stable convergence) ---
+    use_swa: bool = True
+    swa_start_epoch: int = 12                 # UP from 8 - not too early
+    swa_lr: float = 8e-5                      # Moderate
+    
+    # --- Training duration ---
+    max_epochs: int = 28                      # UP from 25
+    patience: int = 6                         # More patient
+    min_delta: float = 2e-4                   # More sensitive
+    
+    # --- Ensemble ---
+    ensemble_size: int = 5
+    use_diverse_ensemble: bool = True
+    ensemble_dropout_variations: tuple = (0.0, -0.05, +0.05, -0.03, +0.03)
+    
+    # --- Threshold optimization: RECALL-CONSTRAINED (Oracle key fix) ---
+    # Instead of F0.5 or precision_constrained, use recall_constrained
+    # Maximize F1 subject to recall ≥ 0.80 (baseline was 86%)
+    threshold_min: float = 0.25               # DOWN from 0.35 - allow lower thresholds
+    threshold_max: float = 0.60               # DOWN from 0.70
+    threshold_step: float = 0.005
+    threshold_objective: str = 'recall_constrained'  # NEW: maximize F1 with recall floor
+    min_recall_constraint: float = 0.80       # NEW: recall must be ≥ 80%
+    
+    # --- Fine-tuning tail ---
+    use_finetune_tail: bool = True
+    finetune_epochs: int = 4                  # UP from 3
+    finetune_lr: float = 8e-6                 # Slightly higher
+    
+    # --- Gradient clipping ---
+    grad_clip: float = 0.8                    # UP from 0.5 - more lenient
+    
+    # --- Batch size ---
+    batch_size: int = 96
+    accumulation_steps: int = 2               # effective batch = 192
+    
+    def to_dict(self) -> Dict:
+        """Export config to plain dict."""
+        cfg: Dict[str, Any] = {}
+        for cls in reversed(self.__class__.mro()):
+            if cls is object:
+                continue
+            for k, v in cls.__dict__.items():
+                if not k.startswith('_') and not callable(v):
+                    cfg[k] = v
+        return cfg
+
+
+# Use AdvancedConfigV3 for this training run (Oracle-optimized after V2 regression)
+config = AdvancedConfigV3()
 
 # %% [markdown]
 # ## 3. Dataset & DataLoader
@@ -1313,7 +1423,7 @@ class FocalLoss(nn.Module):
         return focal_loss
 
 def find_optimal_threshold(y_true, y_probs, min_t=0.1, max_t=0.9, step=0.005,
-                           objective='f1', min_precision=0.60):
+                           objective='f1', min_precision=0.60, min_recall=0.80):
     """Find probability threshold that maximizes the specified objective.
     
     Args:
@@ -1322,8 +1432,9 @@ def find_optimal_threshold(y_true, y_probs, min_t=0.1, max_t=0.9, step=0.005,
         min_t: Minimum threshold to search (default: 0.1)
         max_t: Maximum threshold to search (default: 0.9)
         step: Step size for threshold search (default: 0.005 for finer search)
-        objective: Optimization objective - 'f1', 'f0.5', or 'precision_constrained'
+        objective: Optimization objective - 'f1', 'f0.5', 'precision_constrained', or 'recall_constrained'
         min_precision: Minimum precision constraint for 'precision_constrained' mode
+        min_recall: Minimum recall constraint for 'recall_constrained' mode (default: 0.80)
     
     Returns:
         best_t: Optimal threshold
@@ -1348,6 +1459,14 @@ def find_optimal_threshold(y_true, y_probs, min_t=0.1, max_t=0.9, step=0.005,
                 score = f1_score(y_true, y_pred, zero_division=0)
             else:
                 score = 0.0  # Skip thresholds that don't meet precision constraint
+        elif objective == 'recall_constrained':
+            # Maximize F1 subject to recall >= min_recall
+            # Oracle recommendation: maintain recall >= 80% while improving precision
+            rec = recall_score(y_true, y_pred, zero_division=0)
+            if rec >= min_recall:
+                score = f1_score(y_true, y_pred, zero_division=0)
+            else:
+                score = 0.0  # Skip thresholds that don't meet recall constraint
         else:
             # Default: maximize F1
             score = f1_score(y_true, y_pred, zero_division=0)
@@ -1358,6 +1477,10 @@ def find_optimal_threshold(y_true, y_probs, min_t=0.1, max_t=0.9, step=0.005,
     
     # If precision_constrained found no valid threshold, fall back to max F1
     if objective == 'precision_constrained' and best_score == 0.0:
+        return find_optimal_threshold(y_true, y_probs, min_t, max_t, step, 'f1')
+    
+    # If recall_constrained found no valid threshold, fall back to max F1
+    if objective == 'recall_constrained' and best_score == 0.0:
         return find_optimal_threshold(y_true, y_probs, min_t, max_t, step, 'f1')
             
     return best_t, best_score
@@ -1551,7 +1674,7 @@ def train_epoch(model, loader, optimizer, criterion, scaler, grad_clip, accum_st
 
 @torch.no_grad()
 def evaluate(model, loader, criterion, use_amp, threshold=None, find_threshold=False,
-             threshold_objective='f1', min_precision_constraint=0.60,
+             threshold_objective='f1', min_precision_constraint=0.60, min_recall_constraint=0.80,
              threshold_min=0.1, threshold_max=0.9, threshold_step=0.005):
     model.eval()
     total_loss = 0
@@ -1588,7 +1711,8 @@ def evaluate(model, loader, criterion, use_amp, threshold=None, find_threshold=F
             max_t=threshold_max,
             step=threshold_step,
             objective=threshold_objective,
-            min_precision=min_precision_constraint
+            min_precision=min_precision_constraint,
+            min_recall=min_recall_constraint
         )
         used_t = best_t
     elif threshold is not None:
@@ -1870,11 +1994,13 @@ def train(model, train_loader, val_loader, config):
         # Validate (with dynamic threshold search)
         threshold_objective = getattr(config, 'threshold_objective', 'f1')
         min_precision_constraint = getattr(config, 'min_precision_constraint', 0.60)
+        min_recall_constraint = getattr(config, 'min_recall_constraint', 0.80)
         val_metrics = evaluate(
             model, val_loader, criterion, config.use_amp,
             find_threshold=config.use_optimal_threshold,
             threshold_objective=threshold_objective,
             min_precision_constraint=min_precision_constraint,
+            min_recall_constraint=min_recall_constraint,
             threshold_min=config.threshold_min,
             threshold_max=config.threshold_max,
             threshold_step=config.threshold_step
@@ -1973,6 +2099,7 @@ def train(model, train_loader, val_loader, config):
             find_threshold=config.use_optimal_threshold,
             threshold_objective=getattr(config, 'threshold_objective', 'f1'),
             min_precision_constraint=getattr(config, 'min_precision_constraint', 0.60),
+            min_recall_constraint=getattr(config, 'min_recall_constraint', 0.80),
             threshold_min=config.threshold_min,
             threshold_max=config.threshold_max,
             threshold_step=config.threshold_step
@@ -2110,6 +2237,7 @@ if USE_ENSEMBLE:
     
     threshold_objective = getattr(config, 'threshold_objective', 'f1')
     min_precision_constraint = getattr(config, 'min_precision_constraint', 0.60)
+    min_recall_constraint = getattr(config, 'min_recall_constraint', 0.80)
     best_threshold, best_score = find_optimal_threshold(
         all_val_labels, all_val_probs,
         min_t=config.threshold_min,
@@ -2117,6 +2245,7 @@ if USE_ENSEMBLE:
         step=config.threshold_step,
         objective=threshold_objective,
         min_precision=min_precision_constraint,
+        min_recall=min_recall_constraint,
     )
     print(f"\n[ENSEMBLE] Optimal threshold: {best_threshold:.3f} (Val score={best_score:.4f}, objective={threshold_objective})")
     print(f"[ENSEMBLE] Threshold search range: [{config.threshold_min}, {config.threshold_max}], step={config.threshold_step}")
