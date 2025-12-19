@@ -623,8 +623,211 @@ class QuickWinConfig(FinalConfig):
         return cfg
 
 
-# Use QuickWinConfig for this training run (Quick Wins from Oracle analysis)
-config = QuickWinConfig()
+class AdvancedConfig(FinalConfig):
+    """
+    Advanced configuration targeting F1 ≥ 75%, AUC-ROC ≥ 85%.
+    
+    Based on analysis of QuickWinConfig results:
+    - Val F1 ~72%, AUC ~82% (not meeting targets)
+    - Validation metrics > training (dropout effect - normal)
+    - Overfitting starts around epoch 15-20
+    
+    Key changes:
+    1. STRONGER class weighting: boost neg 30%, reduce pos 30% (more aggressive)
+    2. Focal Loss style: use_focal_weight for hard example mining
+    3. EARLIER SWA: start at epoch 12 (before overfitting)
+    4. HIGHER model capacity: hidden_dim 160 → 192
+    5. Cosine annealing with warm restarts
+    6. LIGHTER regularization: less dropout since model underfits on val
+    7. LARGER ensemble: 7 models with more diversity
+    """
+    
+    # --- Model Capacity INCREASED ---
+    hidden_dim: int = 192                     # UP from 160 - more capacity
+    num_attention_heads: int = 6              # UP from 4 - richer attention
+    vuln_feature_hidden_dim: int = 96         # UP from 80
+    
+    # --- Dropout REDUCED (model underfitting on validation) ---
+    classifier_dropout: float = 0.25          # DOWN from 0.35
+    rnn_dropout: float = 0.25                 # DOWN from 0.35
+    embedding_dropout: float = 0.1            # DOWN from 0.15
+    attention_dropout: float = 0.1            # DOWN from 0.15
+    vuln_feature_dropout: float = 0.15        # DOWN from 0.25
+    
+    # --- STRONGER class weighting for precision ---
+    use_precision_focused_weight: bool = True
+    neg_weight_boost: float = 1.30            # UP from 1.15 - more aggressive
+    pos_weight_reduce: float = 0.70           # DOWN from 0.85
+    
+    # --- Focal Loss style weighting ---
+    use_focal_weight: bool = True             # NEW: focus on hard examples
+    focal_gamma: float = 2.0                  # Focal loss gamma
+    
+    # --- Label smoothing OFF ---
+    label_smoothing: float = 0.0
+    label_smoothing_warmup_epochs: int = 0
+    
+    # --- Token augmentation MINIMAL ---
+    use_token_augmentation: bool = True
+    token_dropout_prob: float = 0.03          # DOWN from 0.05
+    token_mask_prob: float = 0.02             # DOWN from 0.03
+    
+    # --- Learning rate with Cosine Annealing ---
+    scheduler_type: str = 'cosine'            # CHANGED from 'plateau'
+    learning_rate: float = 5e-4               # UP from 3e-4
+    max_lr: float = 2e-3                      # UP from 1e-3
+    warmup_epochs: int = 3                    # NEW: warmup period
+    
+    # --- SWA EARLIER (before overfitting) ---
+    use_swa: bool = True
+    swa_start_epoch: int = 12                 # DOWN from 18
+    swa_lr: float = 1e-4                      # UP from 5e-5
+    
+    # --- Training duration ---
+    max_epochs: int = 25                      # DOWN from 30 (early stopping anyway)
+    patience: int = 6                         # UP from 5
+    min_delta: float = 3e-4                   # More sensitive
+    
+    # --- LARGER & MORE DIVERSE ensemble ---
+    ensemble_size: int = 7                    # UP from 5
+    use_diverse_ensemble: bool = True
+    ensemble_dropout_variations: tuple = (0.0, -0.08, +0.08, -0.05, +0.05, -0.03, +0.03)
+    
+    # --- Threshold optimization FINER ---
+    threshold_min: float = 0.30
+    threshold_max: float = 0.60
+    threshold_step: float = 0.005
+    
+    # --- Fine-tuning tail ---
+    use_finetune_tail: bool = True
+    finetune_epochs: int = 5                  # UP from 3
+    finetune_lr: float = 5e-6                 # DOWN from 1e-5
+    
+    # --- Gradient clipping ---
+    grad_clip: float = 0.5                    # DOWN from 1.0 - more stable
+    
+    # --- Batch size ---
+    batch_size: int = 96                      # DOWN from 128 - more regularization effect
+    accumulation_steps: int = 2               # UP from 1 - effective batch = 192
+    
+    def to_dict(self) -> Dict:
+        """Export config to plain dict."""
+        cfg: Dict[str, Any] = {}
+        for cls in reversed(self.__class__.mro()):
+            if cls is object:
+                continue
+            for k, v in cls.__dict__.items():
+                if not k.startswith('_') and not callable(v):
+                    cfg[k] = v
+        return cfg
+
+
+class AdvancedConfigV2(FinalConfig):
+    """
+    AdvancedConfigV2 - Oracle-optimized configuration for F1 ≥ 75%, AUC-ROC ≥ 85%.
+    
+    Based on Oracle analysis of AdvancedConfig results:
+    - Val F1 ~72%, AUC ~82%, Precision ~49%, Recall ~90%
+    - Overfitting from epoch 10-15 (too aggressive capacity + low dropout)
+    - Focal Loss + strong class weights = noisy optimization
+    - Threshold ~0.35 too low → too many false positives
+    
+    Key changes from AdvancedConfig:
+    1. DISABLE Focal Loss - use weighted BCE instead
+    2. SOFTER class weights: neg +10%, pos -10% (instead of 30%)
+    3. INCREASE dropout back to prevent overfitting
+    4. REDUCE model capacity: hidden_dim 192→160, heads 6→4
+    5. ADD mild label smoothing (0.03) for better calibration
+    6. EARLIER SWA: epoch 8 (before overfitting at 10)
+    7. Use F0.5 or precision-constrained threshold selection
+    """
+    
+    # --- Model Capacity REDUCED for better generalization ---
+    hidden_dim: int = 160                     # DOWN from 192
+    num_attention_heads: int = 4              # DOWN from 6
+    vuln_feature_hidden_dim: int = 80         # DOWN from 96
+    
+    # --- Dropout INCREASED to prevent overfitting ---
+    classifier_dropout: float = 0.35          # UP from 0.25
+    rnn_dropout: float = 0.35                 # UP from 0.25
+    embedding_dropout: float = 0.15           # UP from 0.1
+    attention_dropout: float = 0.15           # UP from 0.1
+    vuln_feature_dropout: float = 0.25        # UP from 0.15
+    
+    # --- SOFTER class weighting ---
+    use_precision_focused_weight: bool = True
+    neg_weight_boost: float = 1.10            # DOWN from 1.30 - less aggressive
+    pos_weight_reduce: float = 0.90           # UP from 0.70
+    
+    # --- Focal Loss DISABLED ---
+    use_focal_weight: bool = False            # DISABLED - causes noisy optimization
+    focal_gamma: float = 1.0                  # Reduced if re-enabled later
+    
+    # --- Label smoothing for better calibration ---
+    label_smoothing: float = 0.03             # UP from 0.0
+    label_smoothing_warmup_epochs: int = 0
+    
+    # --- Token augmentation ---
+    use_token_augmentation: bool = True
+    token_dropout_prob: float = 0.05          # UP from 0.03
+    token_mask_prob: float = 0.03             # UP from 0.02
+    
+    # --- Learning rate REDUCED for stability ---
+    scheduler_type: str = 'plateau'           # CHANGED back from 'cosine' for stability
+    learning_rate: float = 3e-4               # DOWN from 5e-4
+    max_lr: float = 1e-3                      # DOWN from 2e-3
+    scheduler_patience: int = 2
+    scheduler_factor: float = 0.5
+    scheduler_min_lr: float = 1e-6
+    
+    # --- SWA MUCH EARLIER (before overfitting at epoch 10) ---
+    use_swa: bool = True
+    swa_start_epoch: int = 8                  # DOWN from 12
+    swa_lr: float = 1e-4
+    
+    # --- Training duration ---
+    max_epochs: int = 25
+    patience: int = 5                         # DOWN from 6
+    min_delta: float = 3e-4
+    
+    # --- Ensemble ---
+    ensemble_size: int = 5                    # DOWN from 7 - diminishing returns
+    use_diverse_ensemble: bool = True
+    ensemble_dropout_variations: tuple = (0.0, -0.05, +0.05, -0.03, +0.03)
+    
+    # --- Threshold optimization: wider range, use F0.5 objective ---
+    threshold_min: float = 0.35               # UP from 0.30
+    threshold_max: float = 0.70               # UP from 0.60
+    threshold_step: float = 0.005
+    threshold_objective: str = 'f0.5'         # NEW: 'f1', 'f0.5', or 'precision_constrained'
+    min_precision_constraint: float = 0.60    # NEW: for precision_constrained mode
+    
+    # --- Fine-tuning tail ---
+    use_finetune_tail: bool = True
+    finetune_epochs: int = 3
+    finetune_lr: float = 1e-5
+    
+    # --- Gradient clipping ---
+    grad_clip: float = 0.5
+    
+    # --- Batch size ---
+    batch_size: int = 96
+    accumulation_steps: int = 2               # effective batch = 192
+    
+    def to_dict(self) -> Dict:
+        """Export config to plain dict."""
+        cfg: Dict[str, Any] = {}
+        for cls in reversed(self.__class__.mro()):
+            if cls is object:
+                continue
+            for k, v in cls.__dict__.items():
+                if not k.startswith('_') and not callable(v):
+                    cfg[k] = v
+        return cfg
+
+
+# Use AdvancedConfigV2 for this training run (Oracle-optimized)
+config = AdvancedConfigV2()
 
 # %% [markdown]
 # ## 3. Dataset & DataLoader
@@ -1061,8 +1264,57 @@ class LabelSmoothingCrossEntropy(nn.Module):
             
         return F.cross_entropy(preds, target, weight=weight, label_smoothing=self.smoothing)
 
-def find_optimal_threshold(y_true, y_probs, min_t=0.1, max_t=0.9, step=0.005):
-    """Find probability threshold that maximizes F1 score.
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for addressing class imbalance by down-weighting easy examples.
+    
+    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+    
+    Args:
+        gamma: Focusing parameter (default: 2.0). Higher values focus more on hard examples.
+        alpha: Class weights tensor [neg_weight, pos_weight] or None for equal weights.
+        reduction: 'mean', 'sum', or 'none'
+    """
+    def __init__(self, gamma: float = 2.0, alpha: torch.Tensor = None, reduction: str = 'mean'):
+        super().__init__()
+        self.gamma = gamma
+        self.reduction = reduction
+        if alpha is not None:
+            self.register_buffer('alpha', alpha.float())
+        else:
+            self.alpha = None
+    
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # Get probabilities
+        probs = torch.softmax(logits, dim=1)
+        
+        # Get probability of true class
+        ce_loss = F.cross_entropy(logits, targets, reduction='none')
+        
+        # Get p_t (probability of correct class)
+        p_t = probs.gather(1, targets.unsqueeze(1)).squeeze(1)
+        
+        # Focal weight: (1 - p_t)^gamma
+        focal_weight = (1 - p_t) ** self.gamma
+        
+        # Apply focal weight
+        focal_loss = focal_weight * ce_loss
+        
+        # Apply class weights (alpha)
+        if self.alpha is not None:
+            alpha_t = self.alpha.gather(0, targets)
+            focal_loss = alpha_t * focal_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss
+
+def find_optimal_threshold(y_true, y_probs, min_t=0.1, max_t=0.9, step=0.005,
+                           objective='f1', min_precision=0.60):
+    """Find probability threshold that maximizes the specified objective.
     
     Args:
         y_true: Ground truth labels
@@ -1070,19 +1322,45 @@ def find_optimal_threshold(y_true, y_probs, min_t=0.1, max_t=0.9, step=0.005):
         min_t: Minimum threshold to search (default: 0.1)
         max_t: Maximum threshold to search (default: 0.9)
         step: Step size for threshold search (default: 0.005 for finer search)
+        objective: Optimization objective - 'f1', 'f0.5', or 'precision_constrained'
+        min_precision: Minimum precision constraint for 'precision_constrained' mode
+    
+    Returns:
+        best_t: Optimal threshold
+        best_score: Best score achieved (F1 or F0.5 depending on objective)
     """
+    from sklearn.metrics import fbeta_score
+    
     thresholds = np.arange(min_t, max_t + step, step)
     best_t = 0.5
-    best_f1 = 0.0
+    best_score = 0.0
     
     for t in thresholds:
         y_pred = (y_probs >= t).astype(int)
-        f1 = f1_score(y_true, y_pred, zero_division=0)
-        if f1 > best_f1:
-            best_f1 = f1
+        
+        if objective == 'f0.5':
+            # F0.5 score: weights precision higher than recall
+            score = fbeta_score(y_true, y_pred, beta=0.5, zero_division=0)
+        elif objective == 'precision_constrained':
+            # Maximize F1 subject to precision >= min_precision
+            prec = precision_score(y_true, y_pred, zero_division=0)
+            if prec >= min_precision:
+                score = f1_score(y_true, y_pred, zero_division=0)
+            else:
+                score = 0.0  # Skip thresholds that don't meet precision constraint
+        else:
+            # Default: maximize F1
+            score = f1_score(y_true, y_pred, zero_division=0)
+        
+        if score > best_score:
+            best_score = score
             best_t = t
+    
+    # If precision_constrained found no valid threshold, fall back to max F1
+    if objective == 'precision_constrained' and best_score == 0.0:
+        return find_optimal_threshold(y_true, y_probs, min_t, max_t, step, 'f1')
             
-    return best_t, best_f1
+    return best_t, best_score
 
 
 @torch.no_grad()
@@ -1272,7 +1550,9 @@ def train_epoch(model, loader, optimizer, criterion, scaler, grad_clip, accum_st
     }
 
 @torch.no_grad()
-def evaluate(model, loader, criterion, use_amp, threshold=None, find_threshold=False):
+def evaluate(model, loader, criterion, use_amp, threshold=None, find_threshold=False,
+             threshold_objective='f1', min_precision_constraint=0.60,
+             threshold_min=0.1, threshold_max=0.9, threshold_step=0.005):
     model.eval()
     total_loss = 0
     all_labels = []
@@ -1302,7 +1582,14 @@ def evaluate(model, loader, criterion, use_amp, threshold=None, find_threshold=F
     # Determine threshold
     best_t = 0.5
     if find_threshold:
-        best_t, best_f1 = find_optimal_threshold(all_labels, all_probs)
+        best_t, best_score = find_optimal_threshold(
+            all_labels, all_probs,
+            min_t=threshold_min,
+            max_t=threshold_max,
+            step=threshold_step,
+            objective=threshold_objective,
+            min_precision=min_precision_constraint
+        )
         used_t = best_t
     elif threshold is not None:
         used_t = threshold
@@ -1477,6 +1764,29 @@ def train(model, train_loader, val_loader, config):
             pct_start=0.1,
             anneal_strategy='cos'
         )
+    elif config.scheduler_type == 'cosine':
+        # Cosine Annealing with Warm Restarts
+        warmup_epochs = getattr(config, 'warmup_epochs', 3)
+        # Linear warmup scheduler
+        warmup_scheduler = optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=0.1,
+            end_factor=1.0,
+            total_iters=warmup_epochs
+        )
+        # Cosine annealing after warmup
+        cosine_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=config.max_epochs - warmup_epochs,
+            eta_min=getattr(config, 'scheduler_min_lr', 1e-6)
+        )
+        # Sequential: warmup then cosine
+        scheduler = optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, cosine_scheduler],
+            milestones=[warmup_epochs]
+        )
+        print(f"Cosine scheduler: warmup {warmup_epochs} epochs, then cosine annealing")
     else:
         # ReduceLROnPlateau - monitors val_auc_roc for stability
         scheduler_patience = getattr(config, 'scheduler_patience', 2)
@@ -1537,8 +1847,13 @@ def train(model, train_loader, val_loader, config):
         else:
             current_smoothing = 0.0
         
-        # Create criterion with current smoothing
-        if current_smoothing > 0:
+        # Create criterion based on config
+        use_focal = getattr(config, 'use_focal_weight', False)
+        if use_focal:
+            # Focal Loss for hard example mining
+            focal_gamma = getattr(config, 'focal_gamma', 2.0)
+            criterion = FocalLoss(gamma=focal_gamma, alpha=weight)
+        elif current_smoothing > 0:
             criterion = LabelSmoothingCrossEntropy(
                 smoothing=current_smoothing, 
                 weight=weight
@@ -1553,9 +1868,16 @@ def train(model, train_loader, val_loader, config):
         )
         
         # Validate (with dynamic threshold search)
+        threshold_objective = getattr(config, 'threshold_objective', 'f1')
+        min_precision_constraint = getattr(config, 'min_precision_constraint', 0.60)
         val_metrics = evaluate(
             model, val_loader, criterion, config.use_amp,
-            find_threshold=config.use_optimal_threshold
+            find_threshold=config.use_optimal_threshold,
+            threshold_objective=threshold_objective,
+            min_precision_constraint=min_precision_constraint,
+            threshold_min=config.threshold_min,
+            threshold_max=config.threshold_max,
+            threshold_step=config.threshold_step
         )
         
         epoch_time = time.time() - epoch_start
@@ -1567,23 +1889,28 @@ def train(model, train_loader, val_loader, config):
         current_lr = optimizer.param_groups[0]['lr']
         val_t = val_metrics['best_threshold']
         
+        loss_type = "focal" if use_focal else f"smooth={current_smoothing:.3f}"
         print(
             f"Ep {epoch:2d}/{config.max_epochs} ({epoch_time:.0f}s) | "
             f"Train: L={train_metrics['loss']:.3f} F1={train_metrics['f1']:.3f} | "
             f"Val: L={val_metrics['loss']:.3f} F1={val_metrics['f1']:.3f} "
             f"AUC={val_metrics['auc_roc']:.3f} T={val_t:.2f} | "
-            f"LR={current_lr:.2e} | smooth={current_smoothing:.3f}"
+            f"LR={current_lr:.2e} | {loss_type}"
         )
         
-        # SWA update (after swa_start_epoch)
+        # Scheduler step (depends on type)
         if use_swa and epoch >= swa_start_epoch:
+            # SWA update (after swa_start_epoch)
             base_model = model.module if isinstance(model, nn.DataParallel) else model
             swa_model.update_parameters(base_model)
             swa_scheduler.step()
             print(f"  [SWA] Updated averaged model (epoch {epoch})")
         elif config.scheduler_type == 'plateau' and not in_finetune:
-            # Only use regular scheduler before SWA kicks in and not in finetune
+            # ReduceLROnPlateau: step with metric
             scheduler.step(val_metrics['auc_roc'])
+        elif config.scheduler_type in ['cosine', 'onecycle'] and not in_finetune:
+            # Cosine/OneCycle: step every epoch
+            scheduler.step()
         
         # Save best model (based on F1)
         if val_metrics['f1'] > best_f1:
@@ -1643,7 +1970,12 @@ def train(model, train_loader, val_loader, config):
         print("[SWA] Evaluating SWA model...")
         swa_metrics = evaluate(
             swa_model, val_loader, criterion, config.use_amp,
-            find_threshold=config.use_optimal_threshold
+            find_threshold=config.use_optimal_threshold,
+            threshold_objective=getattr(config, 'threshold_objective', 'f1'),
+            min_precision_constraint=getattr(config, 'min_precision_constraint', 0.60),
+            threshold_min=config.threshold_min,
+            threshold_max=config.threshold_max,
+            threshold_step=config.threshold_step
         )
         swa_threshold = swa_metrics['best_threshold']
         print(f"[SWA] Val: F1={swa_metrics['f1']:.4f} AUC={swa_metrics['auc_roc']:.4f} T={swa_threshold:.2f}")
@@ -1776,13 +2108,17 @@ if USE_ENSEMBLE:
     all_val_labels = val_ens_metrics['labels']
     all_val_probs = val_ens_metrics['probs']
     
-    best_threshold, best_f1 = find_optimal_threshold(
+    threshold_objective = getattr(config, 'threshold_objective', 'f1')
+    min_precision_constraint = getattr(config, 'min_precision_constraint', 0.60)
+    best_threshold, best_score = find_optimal_threshold(
         all_val_labels, all_val_probs,
         min_t=config.threshold_min,
         max_t=config.threshold_max,
         step=config.threshold_step,
+        objective=threshold_objective,
+        min_precision=min_precision_constraint,
     )
-    print(f"\n[ENSEMBLE] Optimal threshold: {best_threshold:.3f} (Val F1={best_f1:.4f})")
+    print(f"\n[ENSEMBLE] Optimal threshold: {best_threshold:.3f} (Val score={best_score:.4f}, objective={threshold_objective})")
     print(f"[ENSEMBLE] Threshold search range: [{config.threshold_min}, {config.threshold_max}], step={config.threshold_step}")
     
     # Final ensemble model reference for evaluation
