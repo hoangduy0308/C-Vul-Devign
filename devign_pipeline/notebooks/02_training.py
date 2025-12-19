@@ -936,8 +936,121 @@ class AdvancedConfigV3(FinalConfig):
         return cfg
 
 
-# Use AdvancedConfigV3 for this training run (Oracle-optimized after V2 regression)
-config = AdvancedConfigV3()
+class AdvancedConfigV4(FinalConfig):
+    """
+    AdvancedConfigV4 - Oracle-optimized after V3 confusion matrix bias analysis.
+    Target: F1 ≥ 75%, AUC-ROC ≥ 85%
+    
+    V3 Results:
+    - F1 ~71% (slightly below baseline 72%)
+    - AUC ~80% (below baseline 82%)
+    - Precision ~63%, Recall ~81-92%
+    - Problem: Confusion matrix biased toward predicting "vulnerable" (too many FP)
+    
+    Root Cause Analysis:
+    1. Recall-constrained threshold forced low threshold (~0.41-0.47) → many FP
+    2. Focal Loss without alpha balancing → negatives under-penalized
+    3. Low dropout (0.28) → model overconfident → miscalibration
+    4. Neutral class weights → no pressure to reduce FP
+    
+    Oracle Recommendations for V4:
+    1. Change threshold selection: pick HIGHEST threshold that meets recall≥0.80 (not best F1)
+    2. Add alpha balancing to Focal Loss: alpha_neg > alpha_pos to penalize FP
+    3. Increase dropout to 0.32-0.35 to reduce overconfidence
+    4. Slightly boost negative class weight to discourage FP
+    5. Keep model capacity (192, 6 heads) - separation is the issue, not capacity
+    """
+    
+    # --- Model Capacity (keep from V3 - capacity is not the issue) ---
+    hidden_dim: int = 192
+    num_attention_heads: int = 6
+    vuln_feature_hidden_dim: int = 96
+    
+    # --- Dropout INCREASED to reduce overconfidence (Oracle V4 fix) ---
+    classifier_dropout: float = 0.35          # UP from 0.28
+    rnn_dropout: float = 0.32                 # UP from 0.28
+    embedding_dropout: float = 0.15           # UP from 0.12
+    attention_dropout: float = 0.15           # UP from 0.12
+    vuln_feature_dropout: float = 0.25        # UP from 0.20
+    
+    # --- Class weighting: BOOST NEGATIVE to reduce FP (Oracle V4 key fix) ---
+    use_precision_focused_weight: bool = True
+    neg_weight_boost: float = 1.20            # UP from 1.0 - penalize FP more
+    pos_weight_reduce: float = 0.95           # Slight reduction to balance
+    
+    # --- Focal Loss with ALPHA BALANCING (Oracle V4 key fix) ---
+    # alpha_neg > alpha_pos to penalize false positives more
+    use_focal_weight: bool = True
+    focal_gamma: float = 1.5                  # Keep milder gamma
+    use_focal_alpha: bool = True              # NEW: enable alpha balancing
+    focal_alpha_pos: float = 0.4              # NEW: lower weight for positives
+    focal_alpha_neg: float = 0.6              # NEW: higher weight for negatives (penalize FP)
+    
+    # --- Label smoothing (slightly higher for better calibration) ---
+    label_smoothing: float = 0.03             # UP from 0.02
+    label_smoothing_warmup_epochs: int = 10   # UP from 8
+    
+    # --- Token augmentation (keep moderate) ---
+    use_token_augmentation: bool = True
+    token_dropout_prob: float = 0.08
+    token_mask_prob: float = 0.04
+    
+    # --- Learning rate / scheduler ---
+    scheduler_type: str = 'cosine'
+    learning_rate: float = 3e-4               # DOWN from 4e-4 - more stable
+    max_lr: float = 1.2e-3                    # DOWN from 1.5e-3
+    warmup_epochs: int = 3                    # UP from 2 - longer warmup
+    
+    # --- SWA timing ---
+    use_swa: bool = True
+    swa_start_epoch: int = 14                 # UP from 12 - later start
+    swa_lr: float = 5e-5                      # DOWN from 8e-5 - more conservative
+    
+    # --- Training duration ---
+    max_epochs: int = 30                      # UP from 28
+    patience: int = 6
+    min_delta: float = 2e-4
+    
+    # --- Ensemble ---
+    ensemble_size: int = 5
+    use_diverse_ensemble: bool = True
+    ensemble_dropout_variations: tuple = (0.0, -0.05, +0.05, -0.03, +0.03)
+    
+    # --- Threshold optimization: HIGHEST threshold meeting recall constraint ---
+    # Instead of "maximize F1 subject to recall>=0.80", pick "highest threshold with recall>=0.80"
+    # This directly reduces FP while respecting recall floor
+    threshold_min: float = 0.30               # UP from 0.25
+    threshold_max: float = 0.65               # UP from 0.60
+    threshold_step: float = 0.005
+    threshold_objective: str = 'recall_constrained_strict'  # NEW: highest threshold mode
+    min_recall_constraint: float = 0.80
+    
+    # --- Fine-tuning tail ---
+    use_finetune_tail: bool = True
+    finetune_epochs: int = 4
+    finetune_lr: float = 5e-6                 # DOWN from 8e-6
+    
+    # --- Gradient clipping ---
+    grad_clip: float = 1.0                    # UP from 0.8 - standard
+    
+    # --- Batch size ---
+    batch_size: int = 96
+    accumulation_steps: int = 2               # effective batch = 192
+    
+    def to_dict(self) -> Dict:
+        """Export config to plain dict."""
+        cfg: Dict[str, Any] = {}
+        for cls in reversed(self.__class__.mro()):
+            if cls is object:
+                continue
+            for k, v in cls.__dict__.items():
+                if not k.startswith('_') and not callable(v):
+                    cfg[k] = v
+        return cfg
+
+
+# Use AdvancedConfigV4 for this training run (Oracle-optimized after V3 FP bias analysis)
+config = AdvancedConfigV4()
 
 # %% [markdown]
 # ## 3. Dataset & DataLoader
@@ -1432,9 +1545,15 @@ def find_optimal_threshold(y_true, y_probs, min_t=0.1, max_t=0.9, step=0.005,
         min_t: Minimum threshold to search (default: 0.1)
         max_t: Maximum threshold to search (default: 0.9)
         step: Step size for threshold search (default: 0.005 for finer search)
-        objective: Optimization objective - 'f1', 'f0.5', 'precision_constrained', or 'recall_constrained'
+        objective: Optimization objective:
+            - 'f1': maximize F1 score
+            - 'f0.5': maximize F0.5 score (precision-weighted)
+            - 'precision_constrained': maximize F1 subject to precision >= min_precision
+            - 'recall_constrained': maximize F1 subject to recall >= min_recall
+            - 'recall_constrained_strict': pick HIGHEST threshold that meets recall >= min_recall
+              (Oracle V4: directly reduces FP while respecting recall floor)
         min_precision: Minimum precision constraint for 'precision_constrained' mode
-        min_recall: Minimum recall constraint for 'recall_constrained' mode (default: 0.80)
+        min_recall: Minimum recall constraint for 'recall_constrained' modes (default: 0.80)
     
     Returns:
         best_t: Optimal threshold
@@ -1445,6 +1564,18 @@ def find_optimal_threshold(y_true, y_probs, min_t=0.1, max_t=0.9, step=0.005,
     thresholds = np.arange(min_t, max_t + step, step)
     best_t = 0.5
     best_score = 0.0
+    
+    # For recall_constrained_strict: find highest threshold meeting recall constraint
+    if objective == 'recall_constrained_strict':
+        # Search from HIGH to LOW threshold, pick first one meeting recall >= min_recall
+        for t in reversed(thresholds):
+            y_pred = (y_probs >= t).astype(int)
+            rec = recall_score(y_true, y_pred, zero_division=0)
+            if rec >= min_recall:
+                f1 = f1_score(y_true, y_pred, zero_division=0)
+                return t, f1
+        # Fallback: no threshold meets recall constraint, use max F1
+        return find_optimal_threshold(y_true, y_probs, min_t, max_t, step, 'f1')
     
     for t in thresholds:
         y_pred = (y_probs >= t).astype(int)
@@ -1976,7 +2107,19 @@ def train(model, train_loader, val_loader, config):
         if use_focal:
             # Focal Loss for hard example mining
             focal_gamma = getattr(config, 'focal_gamma', 2.0)
-            criterion = FocalLoss(gamma=focal_gamma, alpha=weight)
+            
+            # Check if using separate focal alpha (Oracle V4 fix)
+            use_focal_alpha = getattr(config, 'use_focal_alpha', False)
+            if use_focal_alpha:
+                # Use explicit focal alpha for class balancing (penalize FP more)
+                focal_alpha_pos = getattr(config, 'focal_alpha_pos', 0.5)
+                focal_alpha_neg = getattr(config, 'focal_alpha_neg', 0.5)
+                focal_weight = torch.tensor([focal_alpha_neg, focal_alpha_pos], 
+                                           dtype=torch.float32, device=DEVICE)
+                criterion = FocalLoss(gamma=focal_gamma, alpha=focal_weight)
+            else:
+                # Use class weight as focal alpha
+                criterion = FocalLoss(gamma=focal_gamma, alpha=weight)
         elif current_smoothing > 0:
             criterion = LabelSmoothingCrossEntropy(
                 smoothing=current_smoothing, 
