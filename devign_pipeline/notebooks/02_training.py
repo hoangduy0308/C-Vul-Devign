@@ -389,8 +389,74 @@ class OptimizedConfig(EnhancedConfig):
         return cfg
 
 
-# Use OptimizedConfig for this training run
-config = OptimizedConfig()
+class RefinedConfig(EnhancedConfig):
+    """
+    Refined configuration based on Oracle analysis of OptimizedConfig results.
+    
+    Training showed: Best Val F1=0.7147, AUC=0.8178 at epoch 21.
+    Model is slightly UNDERFITTING (train AUC ~0.74, val AUC ~0.82).
+    
+    Key changes (Oracle recommendations):
+    1. Reduce dropout: 0.4 → 0.3 (model underfitting, not overfitting)
+    2. Weaken label smoothing: 0.05 → 0.03, stop at epoch 10 (sharper boundaries)
+    3. Delay SWA: epoch 14 → 17 (closer to convergence)
+    4. Fix threshold on best checkpoint only (not per-epoch)
+    5. Slightly more capacity in vuln MLP
+    
+    Target: Stable F1 ≥ 0.72-0.73 with AUC ≥ 0.82
+    """
+    
+    # Dropout REDUCED (model is underfitting)
+    classifier_dropout: float = 0.3       # DOWN from 0.4
+    rnn_dropout: float = 0.3              # DOWN from 0.35
+    embedding_dropout: float = 0.15       # DOWN from 0.2
+    vuln_feature_dropout: float = 0.2     # DOWN from 0.25
+    
+    # Label smoothing WEAKENED (sharper decision boundary for F1)
+    label_smoothing: float = 0.03         # DOWN from 0.05
+    label_smoothing_warmup_epochs: int = 10  # DOWN from 15
+    
+    # SWA DELAYED (start closer to convergence)
+    swa_start_epoch: int = 17             # UP from 14
+    swa_lr: float = 5e-5                  # Lower for stability
+    
+    # Vuln features MLP slightly larger
+    vuln_feature_hidden_dim: int = 64     # UP from 48
+    
+    # Training epochs extended slightly
+    max_epochs: int = 28                  # UP from 25
+    
+    # Early stopping: more patient since we're less regularized
+    patience: int = 5                     # UP from 3
+    min_delta: float = 3e-4               # DOWN from 5e-4
+    
+    # Threshold: use wider range but will fix on best checkpoint
+    threshold_min: float = 0.2
+    threshold_max: float = 0.8
+    threshold_step: float = 0.005
+    
+    # Keep ensemble
+    ensemble_size: int = 5
+    
+    # Fine-tuning tail
+    use_finetune_tail: bool = True
+    finetune_epochs: int = 3
+    finetune_lr: float = 1e-5
+    
+    def to_dict(self) -> Dict:
+        """Export a full config dict including inherited attributes."""
+        cfg: Dict[str, Any] = {}
+        for cls in reversed(self.__class__.mro()):
+            if cls is object:
+                continue
+            for k, v in cls.__dict__.items():
+                if not k.startswith('_') and not callable(v):
+                    cfg[k] = v
+        return cfg
+
+
+# Use RefinedConfig for this training run (Oracle-recommended)
+config = RefinedConfig()
 
 # %% [markdown]
 # ## 3. Dataset & DataLoader
