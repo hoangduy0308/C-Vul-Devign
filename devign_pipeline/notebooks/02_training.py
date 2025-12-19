@@ -455,8 +455,125 @@ class RefinedConfig(EnhancedConfig):
         return cfg
 
 
-# Use RefinedConfig for this training run (Oracle-recommended)
-config = RefinedConfig()
+class FinalConfig(RefinedConfig):
+    """
+    Final configuration for Devign Hybrid BiGRU + Vuln Features model.
+    Based on Oracle analysis of RefinedConfig results (F1≈0.72, AUC≈0.82).
+
+    Key changes from RefinedConfig:
+    1. Increased regularization: rnn_dropout 0.3→0.35, classifier_dropout 0.3→0.35
+    2. Larger vuln MLP: vuln_feature_hidden_dim 64→80
+    3. Reduced label smoothing: 0.03→0.02 for better calibration
+    4. Lower weight_decay: 5e-4 (balanced regularization)
+    5. Extended max_epochs: 28→32
+    6. SWA start adjusted: 17→18
+    7. Higher attention dropout: 0.1→0.15
+
+    Target: Stable F1 ≥ 0.72-0.73 with better calibration (threshold closer to 0.5)
+    """
+
+    # --- Model capacity (keep as RefinedConfig, tune vuln MLP) ---
+    hidden_dim: int = 160           # keep - works well for F1 ~0.72+
+    num_layers: int = 2             # stacked BiGRU
+    bidirectional: bool = True
+
+    # Multi-head attention
+    use_multihead_attention: bool = True
+    num_attention_heads: int = 4
+    attention_dropout: float = 0.15  # UP from 0.1 - more regularization
+
+    # --- Dropout & regularization ---
+    embedding_dropout: float = 0.15  # keep
+
+    # GRU: increased dropout between layers for stability
+    rnn_dropout: float = 0.35        # UP from 0.30
+
+    # Classifier: increased dropout for FC layers
+    classifier_dropout: float = 0.35  # UP from 0.30
+
+    # Vuln features branch - larger MLP
+    vuln_feature_hidden_dim: int = 80    # UP from 64
+    vuln_feature_dropout: float = 0.25   # UP from 0.20
+
+    # --- Training hyperparameters ---
+    batch_size: int = 128
+    accumulation_steps: int = 1
+
+    # Learning rate / weight decay
+    learning_rate: float = 3e-4
+    max_lr: float = 1.0e-3
+    weight_decay: float = 5e-4       # balanced between 1e-4 and 1e-3
+
+    max_epochs: int = 32             # UP from 28
+
+    # Gradient clipping
+    grad_clip: float = 1.0
+
+    # --- Label smoothing ---
+    # Reduced for better calibration (threshold closer to 0.5)
+    label_smoothing: float = 0.02    # DOWN from 0.03
+    label_smoothing_warmup_epochs: int = 10
+
+    # --- Early stopping ---
+    patience: int = 4
+    min_delta: float = 5e-4
+
+    # --- SWA (Stochastic Weight Averaging) ---
+    use_swa: bool = True
+    swa_start_epoch: int = 18        # UP from 17 - start in plateau
+    swa_lr: float = 5e-5
+
+    # --- Scheduler ---
+    scheduler_type: str = "plateau"
+    scheduler_patience: int = 2
+    scheduler_factor: float = 0.5
+    scheduler_min_lr: float = 1e-6
+
+    # --- Data / loader ---
+    max_seq_length: int = 512
+    num_workers: int = 2
+
+    # Packed sequences
+    use_packed_sequences: bool = True
+
+    # Threshold optimization
+    use_optimal_threshold: bool = True
+    threshold_min: float = 0.1
+    threshold_max: float = 0.9
+    threshold_step: float = 0.01
+
+    # Token augmentation
+    use_token_augmentation: bool = True
+    token_dropout_prob: float = 0.1
+    token_mask_prob: float = 0.05
+    mask_token_id: int = 1
+
+    # LayerNorm
+    use_layer_norm: bool = True
+
+    # Ensemble
+    ensemble_size: int = 5
+    ensemble_base_seed: int = 1337
+
+    # Fine-tuning tail
+    use_finetune_tail: bool = True
+    finetune_epochs: int = 3
+    finetune_lr: float = 1e-5
+
+    def to_dict(self) -> Dict:
+        """Export config to plain dict."""
+        cfg: Dict[str, Any] = {}
+        for cls in reversed(self.__class__.mro()):
+            if cls is object:
+                continue
+            for k, v in cls.__dict__.items():
+                if not k.startswith('_') and not callable(v):
+                    cfg[k] = v
+        return cfg
+
+
+# Use FinalConfig for this training run (Oracle-recommended after RefinedConfig analysis)
+config = FinalConfig()
 
 # %% [markdown]
 # ## 3. Dataset & DataLoader
@@ -967,6 +1084,93 @@ def update_bn_dict_loader(loader, model, device=None):
         module.momentum = mom
     
     model.train(was_training)
+
+
+@torch.no_grad()
+def evaluate_split(
+    model,
+    dataloader,
+    device,
+    threshold_grid=(0.1, 0.9, 0.01),
+    use_amp=True,
+    verbose=False,
+):
+    """
+    Evaluate model on a data split with proper eval mode.
+    
+    This function provides accurate metrics by:
+    1. Running model in eval() mode (dropout/augmentation off)
+    2. Computing metrics on entire split (not batch-wise average)
+    3. Grid search for optimal F1 threshold
+    
+    Use this to compare Train vs Val metrics fairly.
+    """
+    model.eval()
+    all_probs = []
+    all_labels = []
+
+    for batch in tqdm(dataloader, desc="Eval Split", leave=False):
+        input_ids = batch["input_ids"].to(device, non_blocking=True)
+        attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+        labels = batch["labels"].cpu().numpy()
+        vuln_feats = batch.get("vuln_features")
+        lengths = batch.get("lengths")
+
+        if vuln_feats is not None:
+            vuln_feats = vuln_feats.to(device, non_blocking=True)
+        if lengths is not None:
+            lengths = lengths.to(device, non_blocking=True)
+
+        with autocast(device_type='cuda', enabled=use_amp):
+            logits = model(input_ids, attention_mask, vuln_feats, lengths)
+        probs = torch.softmax(logits, dim=-1)[:, 1].detach().cpu().numpy()
+
+        all_probs.append(probs)
+        all_labels.append(labels)
+
+    all_probs = np.concatenate(all_probs)
+    all_labels = np.concatenate(all_labels)
+
+    # AUC (threshold-free)
+    try:
+        auc_roc = roc_auc_score(all_labels, all_probs)
+    except ValueError:
+        auc_roc = float("nan")
+
+    # Threshold optimization for F1
+    t_min, t_max, t_step = threshold_grid
+    thresholds = np.arange(t_min, t_max + 1e-8, t_step)
+
+    best_f1 = -1.0
+    best_thr = 0.5
+    best_prec = 0.0
+    best_rec = 0.0
+
+    for thr in thresholds:
+        preds = (all_probs >= thr).astype(int)
+        f1 = f1_score(all_labels, preds, zero_division=0)
+        if f1 > best_f1:
+            best_f1 = f1
+            best_thr = thr
+            best_prec = precision_score(all_labels, preds, zero_division=0)
+            best_rec = recall_score(all_labels, preds, zero_division=0)
+
+    if verbose:
+        print(
+            f"[Eval Split] AUC={auc_roc:.4f} | "
+            f"F1={best_f1:.4f} (thr={best_thr:.2f}) | "
+            f"Prec={best_prec:.4f} | Rec={best_rec:.4f}"
+        )
+
+    return {
+        "auc_roc": auc_roc,
+        "best_f1": best_f1,
+        "best_threshold": best_thr,
+        "precision": best_prec,
+        "recall": best_rec,
+        "labels": all_labels,
+        "probs": all_probs,
+    }
 
 
 def train_epoch(model, loader, optimizer, criterion, scaler, grad_clip, accum_steps, use_amp):
