@@ -572,8 +572,59 @@ class FinalConfig(RefinedConfig):
         return cfg
 
 
-# Use FinalConfig for this training run (Oracle-recommended after RefinedConfig analysis)
-config = FinalConfig()
+class QuickWinConfig(FinalConfig):
+    """
+    Quick Win configuration based on Oracle analysis.
+    Target: F1 ≥ 75%, AUC-ROC ≥ 85%
+    
+    Changes from FinalConfig:
+    1. Precision-focused class weighting (boost negative class weight)
+    2. Disable label smoothing for sharper decision boundary
+    3. Reduced token augmentation (less aggressive)
+    4. LayerNorm enabled (already in FinalConfig)
+    5. Diverse ensemble with per-model dropout variation
+    """
+    
+    # --- Quick Win 1.2: Disable label smoothing ---
+    label_smoothing: float = 0.0              # OFF - sharper boundary
+    label_smoothing_warmup_epochs: int = 0
+    
+    # --- Quick Win 1.3: Reduced token augmentation ---
+    token_dropout_prob: float = 0.05          # DOWN from 0.1
+    token_mask_prob: float = 0.03             # DOWN from 0.05
+    
+    # --- Quick Win 1.4: LayerNorm (already True, confirm) ---
+    use_layer_norm: bool = True
+    
+    # --- Quick Win 1.1: Precision-focused class weighting ---
+    # New flag to enable precision-focused weighting in training loop
+    use_precision_focused_weight: bool = True
+    neg_weight_boost: float = 1.15            # Boost negative class weight by 15%
+    pos_weight_reduce: float = 0.85           # Reduce positive class weight by 15%
+    
+    # --- Quick Win 1.5: Diverse ensemble ---
+    # Dropout variations per ensemble member (indexed by seed offset)
+    use_diverse_ensemble: bool = True
+    ensemble_dropout_variations: tuple = (0.0, -0.05, +0.05, -0.03, +0.03)
+    
+    # Keep other settings from FinalConfig
+    max_epochs: int = 30                      # Slightly reduced
+    patience: int = 5                         # More patient for new config
+    
+    def to_dict(self) -> Dict:
+        """Export config to plain dict."""
+        cfg: Dict[str, Any] = {}
+        for cls in reversed(self.__class__.mro()):
+            if cls is object:
+                continue
+            for k, v in cls.__dict__.items():
+                if not k.startswith('_') and not callable(v):
+                    cfg[k] = v
+        return cfg
+
+
+# Use QuickWinConfig for this training run (Quick Wins from Oracle analysis)
+config = QuickWinConfig()
 
 # %% [markdown]
 # ## 3. Dataset & DataLoader
@@ -1373,6 +1424,9 @@ def train(model, train_loader, val_loader, config):
     - Dynamic label smoothing: 0.05 until epoch 15, then 0.0 for sharper boundaries
     - Fine-tuning tail: low-LR (1e-5) epochs after plateau for fine-grained optimization
     - SWA starts at epoch 14 (closer to best epoch 17-18)
+    
+    Quick Win improvements:
+    - Precision-focused class weighting: boost negative weight to reduce FP
     """
     # Calculate class weights
     all_labels = []
@@ -1382,9 +1436,25 @@ def train(model, train_loader, val_loader, config):
     neg_count = np.sum(np.array(all_labels) == 0)
     pos_count = np.sum(np.array(all_labels) == 1)
     
-    # Slight boost to minority class if imbalanced
-    ratio = float(neg_count) / float(pos_count)
-    weight = torch.tensor([1.0, ratio], dtype=torch.float32, device=DEVICE)
+    # Quick Win 1.1: Precision-focused class weighting
+    use_precision_focused = getattr(config, 'use_precision_focused_weight', False)
+    if use_precision_focused:
+        # Boost negative class weight to reduce false positives (improve precision)
+        neg_boost = getattr(config, 'neg_weight_boost', 1.15)
+        pos_reduce = getattr(config, 'pos_weight_reduce', 0.85)
+        
+        # Compute base ratio and apply precision focus
+        base_ratio = float(neg_count) / float(pos_count)
+        w_neg = neg_boost  # Increase penalty for FP (predicting 1 when actual is 0)
+        w_pos = base_ratio * pos_reduce  # Slightly reduce weight on positives
+        
+        weight = torch.tensor([w_neg, w_pos], dtype=torch.float32, device=DEVICE)
+        print(f"Precision-focused weights: neg={w_neg:.3f}, pos={w_pos:.3f} (boost={neg_boost}, reduce={pos_reduce})")
+    else:
+        # Original: Slight boost to minority class if imbalanced
+        ratio = float(neg_count) / float(pos_count)
+        weight = torch.tensor([1.0, ratio], dtype=torch.float32, device=DEVICE)
+        print(f"Standard class weights: neg=1.0, pos={ratio:.3f}")
     
     # Dynamic label smoothing schedule
     base_smoothing = float(getattr(config, 'label_smoothing', 0.0))
@@ -1633,6 +1703,12 @@ if USE_ENSEMBLE:
     print(f"ENSEMBLE TRAINING: {config.ensemble_size} models (plus SWA)")
     print(f"{'='*50}\n")
     
+    # Quick Win 1.5: Diverse ensemble with dropout variations
+    use_diverse = getattr(config, 'use_diverse_ensemble', False)
+    dropout_variations = getattr(config, 'ensemble_dropout_variations', (0.0,) * 5)
+    if use_diverse:
+        print(f"Diverse ensemble enabled: dropout variations = {dropout_variations}")
+    
     ensemble_models = []
     last_swa_model = None
     
@@ -1640,12 +1716,33 @@ if USE_ENSEMBLE:
         seed = config.ensemble_base_seed + i
         print(f"\n{'='*50}")
         print(f"Training model {i+1}/{config.ensemble_size} (seed={seed})")
+        
+        # Quick Win 1.5: Apply dropout variation for this ensemble member
+        if use_diverse and i < len(dropout_variations):
+            dropout_delta = dropout_variations[i]
+            # Create a modified config with adjusted dropout
+            class DiverseConfig:
+                pass
+            diverse_config = DiverseConfig()
+            for k, v in config.to_dict().items():
+                setattr(diverse_config, k, v)
+            
+            # Adjust dropout values
+            diverse_config.classifier_dropout = max(0.1, min(0.6, config.classifier_dropout + dropout_delta))
+            diverse_config.rnn_dropout = max(0.1, min(0.5, config.rnn_dropout + dropout_delta))
+            diverse_config.to_dict = config.to_dict  # Keep method reference
+            
+            print(f"Dropout variation: delta={dropout_delta:+.2f} → classifier={diverse_config.classifier_dropout:.2f}, rnn={diverse_config.rnn_dropout:.2f}")
+            model_config = diverse_config
+        else:
+            model_config = config
+        
         print(f"{'='*50}\n")
         
         set_global_seed(seed)
-        model = build_model(config)
+        model = build_model(model_config)
         
-        history, best_threshold, swa_model = train(model, train_loader, val_loader, config)
+        history, best_threshold, swa_model = train(model, train_loader, val_loader, model_config)
         
         # Load best checkpoint for this model
         checkpoint = torch.load(os.path.join(MODEL_DIR, 'best_model.pt'), weights_only=False)
