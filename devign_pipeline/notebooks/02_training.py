@@ -1049,8 +1049,130 @@ class AdvancedConfigV4(FinalConfig):
         return cfg
 
 
-# Use AdvancedConfigV4 for this training run (Oracle-optimized after V3 FP bias analysis)
-config = AdvancedConfigV4()
+class AdvancedConfigV5(FinalConfig):
+    """
+    AdvancedConfigV5 - SIMPLIFIED "Branch A" approach based on Oracle analysis.
+    Target: F1 ≥ 75%, AUC-ROC ≥ 85%
+    
+    V4 Results (REGRESSION from baseline):
+    - Best F1 ~69.8% (DOWN from baseline 72%)
+    - AUC ~79.2% (DOWN from baseline 82%)
+    - Precision ~62%, Recall ~80%
+    
+    Root Cause (Oracle Analysis):
+    1. TOO MANY CONFLICTING imbalance methods fighting each other:
+       - Focal Loss + alpha balancing + neg_boost + label smoothing + high dropout
+       - Combined, they HURT ranking quality (AUC dropped 82% → 79%)
+    2. Label smoothing compresses logits → hurts precision/AUC
+    3. High dropout (0.32-0.35) → underfitting (Train F1 < Val F1)
+    4. Threshold tricks can't recover lost AUC separability
+    
+    V5 Strategy - "Branch A" SIMPLIFICATION:
+    1. REMOVE Focal Loss entirely - use plain BCE with pos_weight
+    2. REMOVE label smoothing (set to 0)
+    3. REMOVE alpha balancing, neg_boost, pos_reduce
+    4. REDUCE dropout to 0.20-0.28 (stop underfitting)
+    5. Use simple pos_weight-based BCE (compute from class imbalance)
+    6. Use F1-maximizing threshold (not recall_constrained)
+    7. Keep model capacity (192, 6 heads) - capacity was fine
+    """
+    
+    # --- Model Capacity (KEEP - capacity is not the issue) ---
+    hidden_dim: int = 192
+    num_attention_heads: int = 6
+    vuln_feature_hidden_dim: int = 96
+    
+    # --- Dropout REDUCED to stop underfitting (Oracle V5 key fix) ---
+    # V4 had Train F1 ~64% < Val F1 ~70% = underfitting
+    classifier_dropout: float = 0.25          # DOWN from 0.35
+    rnn_dropout: float = 0.22                 # DOWN from 0.32
+    embedding_dropout: float = 0.10           # DOWN from 0.15
+    attention_dropout: float = 0.10           # DOWN from 0.15
+    vuln_feature_dropout: float = 0.18        # DOWN from 0.25
+    
+    # --- Class weighting SIMPLIFIED (Oracle V5 key fix) ---
+    # Remove all the competing methods, use only pos_weight in BCE
+    use_precision_focused_weight: bool = False  # DISABLED - no manual boost
+    neg_weight_boost: float = 1.0              # NEUTRAL
+    pos_weight_reduce: float = 1.0             # NEUTRAL
+    
+    # --- Focal Loss DISABLED (Oracle V5 key fix) ---
+    # Focal + alpha + weights = too many methods fighting
+    use_focal_weight: bool = False             # DISABLED
+    use_focal_alpha: bool = False              # DISABLED
+    focal_gamma: float = 0.0                   # DISABLED
+    focal_alpha_pos: float = 0.5               # NEUTRAL
+    focal_alpha_neg: float = 0.5               # NEUTRAL
+    
+    # --- Label smoothing DISABLED (Oracle V5 key fix) ---
+    # Label smoothing compresses logits → hurts precision and AUC
+    label_smoothing: float = 0.0               # DISABLED (was 0.03)
+    label_smoothing_warmup_epochs: int = 0     # DISABLED
+    
+    # --- Token augmentation MINIMAL ---
+    # Keep minimal augmentation for regularization without hurting signal
+    use_token_augmentation: bool = True
+    token_dropout_prob: float = 0.05           # DOWN from 0.08
+    token_mask_prob: float = 0.02              # DOWN from 0.04
+    
+    # --- Learning rate / scheduler (stable plateau) ---
+    scheduler_type: str = 'plateau'            # CHANGED from 'cosine' for stability
+    learning_rate: float = 4e-4                # UP from 3e-4 - less regularization needs lower LR
+    max_lr: float = 1.5e-3
+    scheduler_patience: int = 3                # UP from 2 - more patient
+    scheduler_factor: float = 0.5
+    scheduler_min_lr: float = 1e-6
+    
+    # --- SWA timing (start after stable convergence) ---
+    use_swa: bool = True
+    swa_start_epoch: int = 15                  # Moderate - not too early
+    swa_lr: float = 8e-5                       # Moderate
+    
+    # --- Training duration ---
+    max_epochs: int = 30
+    patience: int = 7                          # UP from 6 - more patient with simpler model
+    min_delta: float = 2e-4
+    
+    # --- Ensemble DISABLED for faster iteration ---
+    # Re-enable after V5 baseline is established
+    ensemble_size: int = 1                     # SINGLE MODEL (was 5)
+    use_diverse_ensemble: bool = False         # DISABLED
+    ensemble_dropout_variations: tuple = (0.0,)
+    
+    # --- Threshold optimization: F1-MAXIMIZING (Oracle V5 key fix) ---
+    # Use simple F1 maximization, not recall_constrained
+    threshold_min: float = 0.30
+    threshold_max: float = 0.70
+    threshold_step: float = 0.01
+    threshold_objective: str = 'f1'            # CHANGED from 'recall_constrained_strict'
+    min_recall_constraint: float = 0.70        # Lower floor if using constrained mode
+    
+    # --- Fine-tuning tail ---
+    use_finetune_tail: bool = True
+    finetune_epochs: int = 3
+    finetune_lr: float = 1e-5
+    
+    # --- Gradient clipping (standard) ---
+    grad_clip: float = 1.0
+    
+    # --- Batch size (larger for stability) ---
+    batch_size: int = 128                      # UP from 96
+    accumulation_steps: int = 1                # No accumulation needed
+    
+    def to_dict(self) -> Dict:
+        """Export config to plain dict."""
+        cfg: Dict[str, Any] = {}
+        for cls in reversed(self.__class__.mro()):
+            if cls is object:
+                continue
+            for k, v in cls.__dict__.items():
+                if not k.startswith('_') and not callable(v):
+                    cfg[k] = v
+        return cfg
+
+
+# Use AdvancedConfigV5 for this training run (Simplified Branch A - Oracle recommendation)
+config = AdvancedConfigV5()
 
 # %% [markdown]
 # ## 3. Dataset & DataLoader
