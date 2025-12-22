@@ -1,0 +1,232 @@
+# Devign Vulnerability Scanner - GitHub Actions Workflow
+#
+# This workflow automatically scans C/C++ code for security vulnerabilities
+# using the Devign BiGRU deep learning model.
+#
+# Features:
+# - Runs on push to main and on pull requests
+# - Scans only changed C/C++ files on PRs (fast)
+# - Full scan on main branch pushes
+# - Uploads SARIF report to GitHub Code Scanning
+# - Optional: Fail the build on high-risk findings
+
+name: Devign Vulnerability Scan
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - '**.c'
+      - '**.h'
+      - '**.cpp'
+      - '**.hpp'
+      - '**.cc'
+      - '**.cxx'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - '**.c'
+      - '**.h'
+      - '**.cpp'
+      - '**.hpp'
+      - '**.cc'
+      - '**.cxx'
+  workflow_dispatch:
+    inputs:
+      scan_mode:
+        description: 'Scan mode'
+        required: true
+        default: 'changed'
+        type: choice
+        options:
+          - changed
+          - full
+      threshold:
+        description: 'Vulnerability threshold (0.0-1.0)'
+        required: false
+        default: '0.5'
+
+# Ensure only one scan runs at a time per PR/branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.10'
+  MODEL_PATH: 'models/best_model.pt'
+  VOCAB_PATH: 'models/vocab.json'
+
+jobs:
+  vulnerability-scan:
+    name: Scan for Vulnerabilities
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      security-events: write  # Required for SARIF upload
+      pull-requests: write    # Optional: for PR comments
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for diff scanning
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy tqdm
+      
+      - name: Download model artifacts
+        uses: actions/cache@v4
+        id: model-cache
+        with:
+          path: |
+            models/
+          key: devign-model-v1
+      
+      # If model not in cache, download from releases or external storage
+      - name: Download model (if not cached)
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p models
+          # Option 1: Download from GitHub Releases
+          # gh release download v1.0 -p "*.pt" -p "*.json" -D models/
+          
+          # Option 2: Download from external URL
+          # curl -L -o models/best_model.pt "$MODEL_URL"
+          # curl -L -o models/vocab.json "$VOCAB_URL"
+          
+          echo "⚠️ Model files not found. Please configure model download."
+          echo "See README for instructions on setting up model artifacts."
+      
+      - name: Determine scan mode
+        id: scan-mode
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "mode=diff" >> $GITHUB_OUTPUT
+            echo "base=${{ github.event.pull_request.base.sha }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            if [ "${{ inputs.scan_mode }}" == "full" ]; then
+              echo "mode=full" >> $GITHUB_OUTPUT
+            else
+              echo "mode=diff" >> $GITHUB_OUTPUT
+              echo "base=HEAD~1" >> $GITHUB_OUTPUT
+            fi
+          else
+            # Push to main - scan only changed files
+            echo "mode=diff" >> $GITHUB_OUTPUT
+            echo "base=HEAD~1" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Run vulnerability scan (diff mode)
+        if: steps.scan-mode.outputs.mode == 'diff'
+        run: |
+          cd devign_pipeline
+          python devign_scan.py scan-diff \
+            --base ${{ steps.scan-mode.outputs.base }} \
+            --model ../${{ env.MODEL_PATH }} \
+            --vocab ../${{ env.VOCAB_PATH }} \
+            --threshold ${{ inputs.threshold || '0.5' }} \
+            --format sarif \
+            --output ../results.sarif \
+            --quiet
+        continue-on-error: true
+      
+      - name: Run vulnerability scan (full mode)
+        if: steps.scan-mode.outputs.mode == 'full'
+        run: |
+          cd devign_pipeline
+          python devign_scan.py scan . \
+            --model ../${{ env.MODEL_PATH }} \
+            --vocab ../${{ env.VOCAB_PATH }} \
+            --threshold ${{ inputs.threshold || '0.5' }} \
+            --format sarif \
+            --output ../results.sarif \
+            --recursive \
+            --quiet
+        continue-on-error: true
+      
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results.sarif
+          category: devign-vulnerability-scan
+      
+      - name: Generate scan summary
+        if: always()
+        run: |
+          cd devign_pipeline
+          
+          echo "## 🔍 Devign Vulnerability Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f ../results.sarif ]; then
+            FINDINGS=$(python -c "import json; d=json.load(open('../results.sarif')); print(len(d['runs'][0]['results']))")
+            echo "**Findings:** $FINDINGS potential vulnerabilities" >> $GITHUB_STEP_SUMMARY
+            
+            if [ "$FINDINGS" -gt 0 ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "⚠️ Please review the Security tab for details." >> $GITHUB_STEP_SUMMARY
+            else
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "✅ No vulnerabilities detected!" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "⚠️ Scan did not produce results." >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Scan mode:** ${{ steps.scan-mode.outputs.mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Threshold:** ${{ inputs.threshold || '0.5' }}" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Upload scan artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vulnerability-scan-results
+          path: |
+            results.sarif
+          retention-days: 30
+
+  # Optional: Block merge if high-risk vulnerabilities found
+  check-findings:
+    name: Check for High-Risk Findings
+    needs: vulnerability-scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - name: Download scan results
+        uses: actions/download-artifact@v4
+        with:
+          name: vulnerability-scan-results
+      
+      - name: Check for blockers
+        run: |
+          if [ -f results.sarif ]; then
+            # Count high-risk findings (error level)
+            HIGH_RISK=$(python3 -c "
+          import json
+          d = json.load(open('results.sarif'))
+          results = d['runs'][0]['results']
+          high_risk = sum(1 for r in results if r.get('level') == 'error')
+          print(high_risk)
+          ")
+            
+            echo "High-risk findings: $HIGH_RISK"
+            
+            if [ "$HIGH_RISK" -gt 0 ]; then
+              echo "::error::Found $HIGH_RISK high-risk vulnerabilities. Please fix before merging."
+              # Uncomment to block merge:
+              # exit 1
+            fi
+          fi

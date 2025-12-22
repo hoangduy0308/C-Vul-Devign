@@ -106,19 +106,28 @@ class MultiCodeSlicer:
         """
         Combine backward and forward slices with separator.
         Always inserts SEP between backward and forward slices.
+        SEP is always present even if one slice is empty.
         """
         backward_code = backward.code.strip()
         forward_code = forward.code.strip()
-        
-        if not backward_code:
-            return self._truncate_to_tokens(forward_code, self.config.max_combined_tokens)
-        
-        if not forward_code:
-            return self._truncate_to_tokens(backward_code, self.config.max_combined_tokens)
-        
         sep = f" {self.config.sep_token} "
         sep_tokens = 1
         
+        # Both empty - return empty
+        if not backward_code and not forward_code:
+            return ""
+        
+        # Only forward - SEP at start
+        if not backward_code:
+            truncated = self._truncate_to_tokens(forward_code, self.config.max_combined_tokens - sep_tokens)
+            return f"{sep}{truncated}"
+        
+        # Only backward - SEP at end
+        if not forward_code:
+            truncated = self._truncate_to_tokens(backward_code, self.config.max_combined_tokens - sep_tokens)
+            return f"{truncated}{sep}"
+        
+        # Both non-empty
         backward_tokens = self._estimate_tokens(backward_code)
         forward_tokens = self._estimate_tokens(forward_code)
         total_tokens = backward_tokens + sep_tokens + forward_tokens
@@ -138,10 +147,8 @@ class MultiCodeSlicer:
         truncated_backward = self._truncate_to_tokens(backward_code, backward_budget)
         truncated_forward = self._truncate_to_tokens(forward_code, forward_budget)
         
-        if truncated_forward:
-            return f"{truncated_backward}{sep}{truncated_forward}"
-        else:
-            return truncated_backward
+        # Always include SEP even if forward is truncated to empty
+        return f"{truncated_backward}{sep}{truncated_forward}"
     
     def _extract_lines_code(self, code: str, line_numbers: Set[int]) -> str:
         """Extract specific lines from code."""

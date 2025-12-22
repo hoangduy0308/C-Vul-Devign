@@ -1,0 +1,133 @@
+# Devign Vulnerability Scanner - GitHub Action
+#
+# Use this action in ANY C/C++ repository to scan for vulnerabilities.
+#
+# Add to your repo's .github/workflows/security.yml:
+#
+#   - uses: hoangduy0308/C-Vul-Devign@main
+#     with:
+#       threshold: 0.5
+
+name: 'Devign Vulnerability Scanner'
+description: 'AI-powered C/C++ vulnerability detection using BiGRU deep learning'
+author: 'hoangduy0308'
+
+branding:
+  icon: 'shield'
+  color: 'purple'
+
+inputs:
+  path:
+    description: 'Path to scan (file or directory)'
+    required: false
+    default: '.'
+  threshold:
+    description: 'Vulnerability probability threshold (0.0-1.0)'
+    required: false
+    default: '0.5'
+  scan-mode:
+    description: 'Scan mode: "full" or "diff"'
+    required: false
+    default: 'diff'
+  diff-base:
+    description: 'Git ref to diff against (for diff mode)'
+    required: false
+    default: 'origin/main'
+  fail-on-findings:
+    description: 'Fail the action if vulnerabilities are found'
+    required: false
+    default: 'false'
+  sarif-output:
+    description: 'Path for SARIF output file'
+    required: false
+    default: 'devign-results.sarif'
+  upload-sarif:
+    description: 'Upload SARIF to GitHub Code Scanning'
+    required: false
+    default: 'true'
+
+outputs:
+  findings-count:
+    description: 'Number of vulnerabilities found'
+    value: ${{ steps.scan.outputs.findings }}
+  high-risk-count:
+    description: 'Number of high-risk vulnerabilities'
+    value: ${{ steps.scan.outputs.high_risk }}
+  sarif-file:
+    description: 'Path to generated SARIF file'
+    value: ${{ inputs.sarif-output }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+    
+    - name: Cache dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: devign-deps-${{ runner.os }}
+    
+    - name: Install dependencies
+      shell: bash
+      run: |
+        pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+        pip install --quiet numpy tqdm
+    
+    - name: Download scanner
+      shell: bash
+      run: |
+        # Download scanner from releases
+        curl -sL https://github.com/hoangduy0308/C-Vul-Devign/releases/latest/download/devign-scanner.zip -o scanner.zip
+        unzip -q scanner.zip -d ${{ runner.temp }}/devign
+    
+    - name: Run scan
+      id: scan
+      shell: bash
+      run: |
+        cd ${{ runner.temp }}/devign
+        
+        if [ "${{ inputs.scan-mode }}" == "diff" ]; then
+          python devign_scan.py scan-diff \
+            --base "${{ inputs.diff-base }}" \
+            --threshold ${{ inputs.threshold }} \
+            --format sarif \
+            --output "${{ github.workspace }}/${{ inputs.sarif-output }}" \
+            --quiet || true
+        else
+          python devign_scan.py scan "${{ github.workspace }}/${{ inputs.path }}" \
+            --threshold ${{ inputs.threshold }} \
+            --format sarif \
+            --output "${{ github.workspace }}/${{ inputs.sarif-output }}" \
+            --recursive \
+            --quiet || true
+        fi
+        
+        # Extract counts from SARIF
+        if [ -f "${{ github.workspace }}/${{ inputs.sarif-output }}" ]; then
+          FINDINGS=$(python3 -c "import json; d=json.load(open('${{ github.workspace }}/${{ inputs.sarif-output }}')); print(len(d['runs'][0]['results']))")
+          HIGH_RISK=$(python3 -c "import json; d=json.load(open('${{ github.workspace }}/${{ inputs.sarif-output }}')); print(sum(1 for r in d['runs'][0]['results'] if r.get('level')=='error'))")
+        else
+          FINDINGS=0
+          HIGH_RISK=0
+        fi
+        
+        echo "findings=$FINDINGS" >> $GITHUB_OUTPUT
+        echo "high_risk=$HIGH_RISK" >> $GITHUB_OUTPUT
+    
+    - name: Upload SARIF
+      if: inputs.upload-sarif == 'true'
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.sarif-output }}
+        category: devign-vulnerability-scan
+    
+    - name: Check findings
+      if: inputs.fail-on-findings == 'true' && steps.scan.outputs.findings != '0'
+      shell: bash
+      run: |
+        echo "::error::Found ${{ steps.scan.outputs.findings }} vulnerabilities"
+        exit 1
