@@ -126,10 +126,11 @@ class SARIFReporter:
         dangerous_apis: List[str],
         start_line: int = 1,
         end_line: Optional[int] = None,
-        message: Optional[str] = None
+        message: Optional[str] = None,
+        threshold: float = 0.5
     ) -> None:
         """Add a vulnerability finding."""
-        if probability < 0.5:
+        if probability < threshold:
             return
         
         if risk_level in ("CRITICAL", "HIGH"):

@@ -201,29 +201,29 @@ def format_results_text(results: List[ScanResult], verbose: bool = False) -> str
     
     for result in results:
         if result.error:
-            lines.append(f"✗ {result.file_path}")
+            lines.append(f"[ERROR] {result.file_path}")
             lines.append(f"  ERROR: {result.error}")
         elif result.vulnerable:
-            risk_emoji = {
-                "CRITICAL": "🔴",
-                "HIGH": "🟠", 
-                "MEDIUM": "🟡",
-                "LOW": "🟢"
-            }.get(result.risk_level, "⚪")
+            risk_marker = {
+                "CRITICAL": "[!!!]",
+                "HIGH": "[!!]", 
+                "MEDIUM": "[!]",
+                "LOW": "[~]"
+            }.get(result.risk_level, "[?]")
             
-            lines.append(f"{risk_emoji} {result.file_path}")
+            lines.append(f"{risk_marker} {result.file_path}")
             lines.append(f"   Risk: {result.risk_level} ({result.probability:.1%})")
             if result.dangerous_apis:
                 lines.append(f"   APIs: {', '.join(result.dangerous_apis[:5])}")
         elif verbose:
-            lines.append(f"✓ {result.file_path} (safe)")
+            lines.append(f"[OK] {result.file_path} (safe)")
     
     lines.append("=" * 60)
     
     if vuln_count > 0:
-        lines.append(f"⚠️  Found {vuln_count} potential vulnerabilities!")
+        lines.append(f"WARNING: Found {vuln_count} potential vulnerabilities!")
     else:
-        lines.append("✅ No vulnerabilities detected")
+        lines.append("OK: No vulnerabilities detected")
     
     return "\n".join(lines)
 
@@ -253,7 +253,8 @@ def format_results_json(results: List[ScanResult]) -> str:
 
 def generate_sarif(
     results: List[ScanResult],
-    base_path: str = "."
+    base_path: str = ".",
+    threshold: float = 0.5
 ) -> Dict[str, Any]:
     """Generate SARIF report from scan results."""
     reporter = SARIFReporter(base_path=base_path)
@@ -264,7 +265,8 @@ def generate_sarif(
                 file_path=result.file_path,
                 probability=result.probability,
                 risk_level=result.risk_level,
-                dangerous_apis=result.dangerous_apis
+                dangerous_apis=result.dangerous_apis,
+                threshold=threshold
             )
     
     return reporter.generate()
@@ -294,7 +296,7 @@ def cmd_scan(args):
         return 0
     
     if args.format == "sarif":
-        sarif = generate_sarif(results, base_path=args.path)
+        sarif = generate_sarif(results, base_path=args.path, threshold=args.threshold)
         output = json.dumps(sarif, indent=2)
     elif args.format == "json":
         output = format_results_json(results)
@@ -337,7 +339,7 @@ def cmd_scan_diff(args):
         return 0
     
     if args.format == "sarif":
-        sarif = generate_sarif(results, base_path=".")
+        sarif = generate_sarif(results, base_path=".", threshold=args.threshold)
         output = json.dumps(sarif, indent=2)
     elif args.format == "json":
         output = format_results_json(results)
