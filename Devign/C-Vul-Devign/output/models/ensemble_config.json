@@ -1,0 +1,11 @@
+{
+  "num_seeds": 3,
+  "pos_weight_scale": 1.12,
+  "gate_init": 0.3,
+  "optimal_threshold": 0.3600000000000001,
+  "test_f1_05": 0.7359231776516805,
+  "test_opt_f1": 0.7453168593064966,
+  "test_precision": 0.7438345266507558,
+  "test_recall": 0.7468051118210862,
+  "test_auc": 0.8525894525340189
+}
