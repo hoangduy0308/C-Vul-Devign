@@ -1,14 +1,28 @@
 # Vulnerability Patterns for C Code Analysis
+# Based on CWE Top 25, Microsoft SDL, CERT C Coding Standard
 
 buffer_overflow:
-  description: "Buffer overflow vulnerabilities"
+  description: "Buffer overflow vulnerabilities (CWE-120, CWE-121, CWE-122, CWE-787)"
   dangerous_functions:
+    # Unbounded copy - SDL Banned
     - strcpy
     - strcat
     - gets
     - sprintf
+    - vsprintf
+    # Bounded but error-prone
+    - strncpy   # missing NUL terminator issues
+    - strncat   # off-by-one
+    - strtok    # stateful, boundary issues
+    # Memory operations
     - memcpy
     - memmove
+    - memset
+    - bcopy     # deprecated
+    - bzero     # deprecated
+    # Allocation + copy
+    - strdup
+    - strndup
   patterns:
     - "strcpy\\s*\\([^,]+,[^)]+\\)"
     - "strcat\\s*\\([^,]+,[^)]+\\)"
@@ -16,42 +30,68 @@ buffer_overflow:
     - "sprintf\\s*\\([^,]+,[^)]+\\)"
     - "memcpy\\s*\\([^,]+,[^,]+,[^)]+\\)"
     - "memmove\\s*\\([^,]+,[^,]+,[^)]+\\)"
-
-format_string:
-  description: "Format string vulnerabilities"
-  dangerous_functions:
-    - printf
-    - fprintf
-    - sprintf
-    - snprintf
-  patterns:
-    - "printf\\s*\\([^\"]+\\)"
-    - "fprintf\\s*\\([^,]+,[^\"]+\\)"
-    - "sprintf\\s*\\([^,]+,[^\"]+\\)"
-    - "snprintf\\s*\\([^,]+,[^,]+,[^\"]+\\)"
+    - "strncpy\\s*\\([^,]+,[^,]+,[^)]+\\)"
+    - "strncat\\s*\\([^,]+,[^,]+,[^)]+\\)"
   user_input_indicators:
     - argv
     - gets
     - fgets
     - scanf
     - read
+    - recv
+
+format_string:
+  description: "Format string vulnerabilities (CWE-134)"
+  dangerous_functions:
+    - printf
+    - fprintf
+    - sprintf
+    - snprintf
+    - vprintf
+    - vfprintf
+    - vsprintf
+    - vsnprintf
+    - syslog
+    - asprintf
+    - vasprintf
+  patterns:
+    - "printf\\s*\\([^\"]+\\)"
+    - "fprintf\\s*\\([^,]+,[^\"]+\\)"
+    - "sprintf\\s*\\([^,]+,[^\"]+\\)"
+    - "snprintf\\s*\\([^,]+,[^,]+,[^\"]+\\)"
+    - "syslog\\s*\\([^,]+,[^\"]+\\)"
+  indicators:
+    - user_controlled_format_string
+    - missing_format_specifier
 
 null_pointer:
-  description: "Null pointer dereference vulnerabilities"
+  description: "Null pointer dereference vulnerabilities (CWE-476)"
+  dangerous_functions:
+    - malloc
+    - calloc
+    - realloc
+    - strdup
+    - strndup
+    - fopen
+    - mmap
   patterns:
     - "\\*\\s*\\w+\\s*(?:=|==)\\s*NULL"
     - "if\\s*\\([^)]*==\\s*NULL[^)]*\\)"
     - "\\w+\\s*->\\s*\\w+.*(?:malloc|calloc|realloc)"
+    - "(?:malloc|calloc|realloc)\\s*\\([^)]+\\)\\s*;\\s*(?!if)"
   indicators:
     - missing_null_check_after_malloc
     - dereference_before_null_check
     - null_check_bypass
 
 use_after_free:
-  description: "Use after free vulnerabilities"
+  description: "Use after free vulnerabilities (CWE-416, CWE-415)"
+  dangerous_functions:
+    - free
   patterns:
     - "free\\s*\\([^)]+\\)"
     - "\\*\\s*\\w+.*free"
+    - "free\\s*\\([^)]+\\)\\s*;[^}]*\\1"
   indicators:
     - pointer_access_after_free
     - double_free
@@ -62,19 +102,150 @@ use_after_free:
     - pointer_assignment
 
 integer_overflow:
-  description: "Integer overflow vulnerabilities"
+  description: "Integer overflow/underflow vulnerabilities (CWE-190, CWE-191, CWE-681)"
   dangerous_functions:
+    # Unsafe conversion
     - atoi
     - atol
+    - atoll
+    - atof
+    # Safer but still need checking
     - strtol
     - strtoul
     - strtoll
+    - strtoull
+    - strtod
+    - strtof
   patterns:
     - "atoi\\s*\\([^)]+\\)"
     - "atol\\s*\\([^)]+\\)"
     - "strtol\\s*\\([^)]+\\)"
     - "strtoul\\s*\\([^)]+\\)"
+    - "\\w+\\s*[+\\-*]\\s*\\w+.*(?:malloc|calloc|alloca)"
+    - "\\(\\s*(?:int|short|char)\\s*\\)\\s*\\w+"
   indicators:
     - unchecked_arithmetic
     - size_calculation
     - array_index_calculation
+    - truncation_on_cast
+
+command_injection:
+  description: "Command injection vulnerabilities (CWE-78, CWE-88)"
+  dangerous_functions:
+    - system
+    - popen
+    - pclose
+    - execl
+    - execle
+    - execlp
+    - execv
+    - execve
+    - execvp
+    - execlpe
+    - execvpe
+  patterns:
+    - "system\\s*\\([^)]+\\)"
+    - "popen\\s*\\([^)]+\\)"
+    - "exec[lv]p?e?\\s*\\([^)]+\\)"
+  indicators:
+    - user_input_in_command
+    - shell_metacharacters
+    - unvalidated_path
+  taint_sources:
+    - argv
+    - getenv
+    - fgets
+    - scanf
+    - read
+    - recv
+
+path_traversal:
+  description: "Path traversal vulnerabilities (CWE-22, CWE-73)"
+  dangerous_functions:
+    - fopen
+    - open
+    - access
+    - chmod
+    - chown
+    - realpath
+    - readlink
+    - mkdir
+    - rmdir
+    - unlink
+    - rename
+  patterns:
+    - "fopen\\s*\\([^,]+,[^)]+\\)"
+    - "open\\s*\\([^)]+\\)"
+    - "\\.\\.\\/|\\.\\.\\\\|%2e%2e"
+  indicators:
+    - uncanonicalized_path
+    - user_controlled_path
+    - missing_path_validation
+  taint_sources:
+    - argv
+    - getenv
+    - fgets
+    - read
+
+race_condition:
+  description: "Race condition / TOCTOU vulnerabilities (CWE-367, CWE-377)"
+  dangerous_functions:
+    # Insecure temp file
+    - tmpnam
+    - tempnam
+    - mktemp
+    # File checks followed by operations
+    - access
+    - stat
+    - lstat
+  patterns:
+    - "tmpnam\\s*\\([^)]+\\)"
+    - "mktemp\\s*\\([^)]+\\)"
+    - "access\\s*\\([^)]+\\)\\s*.*open\\s*\\("
+    - "stat\\s*\\([^)]+\\)\\s*.*fopen\\s*\\("
+  indicators:
+    - check_then_use
+    - insecure_temp_file
+    - predictable_filename
+  safe_alternatives:
+    - mkstemp
+    - mkostemp
+    - mkdtemp
+
+taint_source:
+  description: "External input sources that should be validated"
+  dangerous_functions:
+    # Standard input
+    - gets
+    - fgets
+    - getchar
+    - getc
+    - fgetc
+    - getline
+    - getdelim
+    # Formatted input
+    - scanf
+    - fscanf
+    - sscanf
+    - vscanf
+    # File/network read
+    - read
+    - fread
+    - pread
+    - recv
+    - recvfrom
+    - recvmsg
+    - readv
+    # Environment
+    - getenv
+    - getwd
+    - getcwd
+  patterns:
+    - "(?:gets|fgets|scanf|fscanf|read|recv)\\s*\\([^)]+\\)"
+    - "getenv\\s*\\([^)]+\\)"
+    - "argv\\s*\\["
+  indicators:
+    - external_input
+    - network_data
+    - environment_variable
+    - command_line_argument

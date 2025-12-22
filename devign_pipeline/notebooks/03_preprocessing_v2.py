@@ -236,18 +236,31 @@ if train_features:
         print(f"  {name}: {sample_feat[name]:.3f}")
 
 # %% [markdown]
-# ## 6. Step 3: Hybrid Tokenization
+# ## 6. Step 3: Canonical Tokenization
+# 
+# Uses CanonicalTokenizer with semantic variable buckets:
+# - **BUF_k**: buffer, dst, src, data, payload...
+# - **LEN_k**: len, size, count...
+# - **PTR_k**: ptr, pointer, head, tail, node...
+# - **IDX_k**: idx, index, pos, offset...
+# - **SENS_k**: password, token, secret, credential, auth, session...
+# - **PRIV_k**: admin, root, user, privilege, permission...
+# - **VAR_k**: other variables
+# 
+# Preserves dangerous APIs (malloc, free, strcpy...) and C keywords as-is.
 
 # %%
 from src.tokenization.hybrid_tokenizer import (
+    CanonicalTokenizer,
     HybridTokenizer, 
     build_hybrid_vocab, 
     vectorize,
-    DANGEROUS_APIS
+    DANGEROUS_APIS,
+    get_canonical_vocab_tokens
 )
 
-# Initialize tokenizer
-tokenizer = HybridTokenizer(
+# Use CanonicalTokenizer for semantic variable buckets (BUF_k, LEN_k, PTR_k, IDX_k, SENS_k, PRIV_k, VAR_k)
+tokenizer = CanonicalTokenizer(
     preserve_dangerous_apis=TOKENIZER_CONFIG['preserve_dangerous_apis'],
     preserve_keywords=TOKENIZER_CONFIG['preserve_keywords']
 )
@@ -306,7 +319,8 @@ print("Building vocabulary from train set...")
 vocab = build_hybrid_vocab(
     train_combined,
     min_freq=TOKENIZER_CONFIG['min_freq'],
-    max_size=TOKENIZER_CONFIG['max_vocab_size']
+    max_size=TOKENIZER_CONFIG['max_vocab_size'],
+    use_canonical=True  # Enable canonical tokens (BUF_k, SENS_k, PRIV_k, etc.)
 )
 
 print(f"Vocabulary size: {len(vocab)}")
