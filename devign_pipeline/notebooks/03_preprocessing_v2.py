@@ -81,6 +81,17 @@ PROCESS_CONFIG = {
     'n_jobs': 4,
 }
 
+# Minimum tokens for valid slice (fallback to full function if less)
+MIN_SLICE_TOKENS = 10
+
+
+def estimate_tokens(code: str) -> int:
+    """Quick estimate of token count."""
+    import re
+    tokens = re.findall(r'\w+|[^\w\s]', code)
+    return len(tokens)
+
+
 print(f"Data dir: {DATA_DIR}")
 print(f"Output dir: {OUTPUT_DIR}")
 
@@ -145,12 +156,13 @@ def find_criterion_lines(code: str, dictionary: VulnDictionary) -> list:
 
 
 def process_multi_slice_batch(df, batch_size=500):
-    """Process multi-slicing in batches."""
+    """Process multi-slicing in batches with fallback for short slices."""
     codes = df['func'].tolist()
     n_samples = len(codes)
     
     slice_results = []
     combined_codes = []
+    fallback_count = 0
     
     for start in tqdm(range(0, n_samples, batch_size), desc="Multi-slicing"):
         end = min(start + batch_size, n_samples)
@@ -161,12 +173,21 @@ def process_multi_slice_batch(df, batch_size=500):
         for code, criteria in zip(batch_codes, batch_criteria):
             try:
                 result = slicer.multi_slice(code, criteria)
+                combined = result.combined_code
+                
+                # Check if slice is too short - fallback to full function
+                if estimate_tokens(combined) < MIN_SLICE_TOKENS:
+                    combined = code
+                    fallback_count += 1
+                
                 slice_results.append(result)
-                combined_codes.append(result.combined_code)
+                combined_codes.append(combined)
             except Exception as e:
                 slice_results.append(None)
                 combined_codes.append(code)
+                fallback_count += 1
     
+    print(f"  Fallback to full function: {fallback_count} samples")
     return slice_results, combined_codes
 
 

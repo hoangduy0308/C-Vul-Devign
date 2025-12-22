@@ -100,6 +100,7 @@ SPECIAL_TOKENS = {
 }
 
 TOKEN_PATTERNS = [
+    ('SEP_TOKEN', r'\[SEP\]'),  # Must be first to match before PUNCTUATION
     ('STRING', r'"(?:[^"\\]|\\.)*"'),
     ('CHAR', r"'(?:[^'\\]|\\.)*'"),
     ('COMMENT_MULTI', r'/\*[\s\S]*?\*/'),
@@ -164,7 +165,9 @@ class HybridTokenizer:
             if token_type in ('WHITESPACE', 'COMMENT_MULTI', 'COMMENT_SINGLE'):
                 continue
             
-            if token_type == 'STRING':
+            if token_type == 'SEP_TOKEN':
+                tokens.append('SEP')
+            elif token_type == 'STRING':
                 tokens.append('STR')
             elif token_type == 'CHAR':
                 tokens.append('CHAR')
@@ -185,9 +188,6 @@ class HybridTokenizer:
         if self.preserve_keywords and value in C_KEYWORDS:
             return value
         
-        if self.preserve_dangerous_apis and value in DANGEROUS_APIS:
-            return value
-        
         next_idx = current_idx + 1
         while next_idx < len(raw_tokens):
             next_val, next_type = raw_tokens[next_idx]
@@ -195,10 +195,16 @@ class HybridTokenizer:
                 break
             next_idx += 1
         
-        if next_idx < len(raw_tokens):
-            next_val, _ = raw_tokens[next_idx]
-            if next_val == '(':
-                return 'FUNC'
+        is_function_call = next_idx < len(raw_tokens) and raw_tokens[next_idx][0] == '('
+        
+        if self.preserve_dangerous_apis and value in DANGEROUS_APIS:
+            if is_function_call:
+                return value
+            else:
+                return 'ID'
+        
+        if is_function_call:
+            return 'FUNC'
         
         return 'ID'
     
@@ -300,7 +306,9 @@ class CanonicalTokenizer(HybridTokenizer):
             if token_type in ('WHITESPACE', 'COMMENT_MULTI', 'COMMENT_SINGLE'):
                 continue
             
-            if token_type == 'STRING':
+            if token_type == 'SEP_TOKEN':
+                tokens.append('SEP')
+            elif token_type == 'STRING':
                 tokens.append('STR')
             elif token_type == 'CHAR':
                 tokens.append('CHAR')
@@ -321,9 +329,6 @@ class CanonicalTokenizer(HybridTokenizer):
         if self.preserve_keywords and value in C_KEYWORDS:
             return value
         
-        if self.preserve_dangerous_apis and value in DANGEROUS_APIS:
-            return value
-        
         next_idx = current_idx + 1
         while next_idx < len(raw_tokens):
             next_val, next_type = raw_tokens[next_idx]
@@ -331,10 +336,16 @@ class CanonicalTokenizer(HybridTokenizer):
                 break
             next_idx += 1
         
-        if next_idx < len(raw_tokens):
-            next_val, _ = raw_tokens[next_idx]
-            if next_val == '(':
-                return 'FUNC'
+        is_function_call = next_idx < len(raw_tokens) and raw_tokens[next_idx][0] == '('
+        
+        if self.preserve_dangerous_apis and value in DANGEROUS_APIS:
+            if is_function_call:
+                return value
+            else:
+                return self._get_canonical_token(value)
+        
+        if is_function_call:
+            return 'FUNC'
         
         return self._get_canonical_token(value)
     

@@ -105,39 +105,19 @@ class MultiCodeSlicer:
     def _combine_slices(self, backward: CodeSlice, forward: CodeSlice) -> str:
         """
         Combine backward and forward slices with separator.
-        Prioritizes backward slice when truncating (cuts forward first).
+        Always inserts SEP between backward and forward slices.
         """
         backward_code = backward.code.strip()
         forward_code = forward.code.strip()
         
-        backward_only_lines = backward.included_lines - forward.included_lines
-        forward_only_lines = forward.included_lines - backward.included_lines
-        
-        if backward_only_lines:
-            backward_code = self._extract_lines_code(
-                backward.original_code, backward_only_lines
-            )
-        else:
-            backward_code = backward.code.strip()
-        
-        if forward_only_lines:
-            forward_code = self._extract_lines_code(
-                forward.original_code, forward_only_lines
-            )
-        else:
-            forward_code = ""
-        
-        if not backward_code and not forward_code:
-            return backward.code.strip()
+        if not backward_code:
+            return self._truncate_to_tokens(forward_code, self.config.max_combined_tokens)
         
         if not forward_code:
             return self._truncate_to_tokens(backward_code, self.config.max_combined_tokens)
         
-        if not backward_code:
-            return self._truncate_to_tokens(forward_code, self.config.max_combined_tokens)
-        
         sep = f" {self.config.sep_token} "
-        sep_tokens = len(self.config.sep_token.split())
+        sep_tokens = 1
         
         backward_tokens = self._estimate_tokens(backward_code)
         forward_tokens = self._estimate_tokens(forward_code)
@@ -148,17 +128,20 @@ class MultiCodeSlicer:
         
         available = self.config.max_combined_tokens - sep_tokens
         
-        if backward_tokens >= available:
-            truncated_backward = self._truncate_to_tokens(backward_code, available)
-            return truncated_backward
+        if backward_tokens <= available // 2:
+            backward_budget = backward_tokens
+            forward_budget = available - backward_budget
+        else:
+            backward_budget = available * 2 // 3
+            forward_budget = available - backward_budget
         
-        remaining_for_forward = available - backward_tokens
-        truncated_forward = self._truncate_to_tokens(forward_code, remaining_for_forward)
+        truncated_backward = self._truncate_to_tokens(backward_code, backward_budget)
+        truncated_forward = self._truncate_to_tokens(forward_code, forward_budget)
         
         if truncated_forward:
-            return f"{backward_code}{sep}{truncated_forward}"
+            return f"{truncated_backward}{sep}{truncated_forward}"
         else:
-            return backward_code
+            return truncated_backward
     
     def _extract_lines_code(self, code: str, line_numbers: Set[int]) -> str:
         """Extract specific lines from code."""
