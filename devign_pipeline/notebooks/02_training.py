@@ -48,11 +48,11 @@ from tqdm.auto import tqdm
 # Environment setup
 if os.path.exists('/kaggle'):
     WORKING_DIR = '/kaggle/working'
-    DATA_DIR = '/kaggle/input/devign-final/processed_v2'
+    DATA_DIR = '/kaggle/input/devign-final/processed'
     sys.path.insert(0, '/tmp/devign_pipeline')
 else:
     WORKING_DIR = '/media/hdi/Hdii/Work/C Vul Devign'
-    DATA_DIR = '/media/hdi/Hdii/Work/C Vul Devign/Dataset/devign_slice_v2'
+    DATA_DIR = '/media/hdi/Hdii/Work/C Vul Devign/Dataset/devign_slice_v3'
     sys.path.insert(0, '/media/hdi/Hdii/Work/C Vul Devign/devign_pipeline')
 
 MODEL_DIR = os.path.join(WORKING_DIR, 'models')
@@ -98,8 +98,8 @@ class TrainConfig:
     classifier_dropout: float = 0.4  # DOWN from 0.5 - rebalanced with embedding dropout
     bidirectional: bool = True
     
-    # Hybrid Model Features (V2)
-    use_vuln_features: bool = True
+    # Hybrid Model Features (V2) - disabled for v3 dataset (no vuln features)
+    use_vuln_features: bool = False
     # Read from n_features or feature_names (devign_slice_v2 format)
     vuln_feature_dim: int = data_config.get('n_features') or len(data_config.get('feature_names', [])) or 25
     vuln_feature_hidden_dim: int = 64
@@ -1185,9 +1185,10 @@ config = AdvancedConfigV5()
 class DevignDataset(Dataset):
     """Load preprocessed single .npz file (tokens + vuln features)"""
     
-    def __init__(self, npz_path: str, max_seq_length: int = 512, load_vuln_features: bool = True):
+    def __init__(self, npz_path: str, max_seq_length: int = 512, load_vuln_features: bool = True, vuln_feature_dim: int = 25):
         self.max_seq_length = max_seq_length
         self.load_vuln_features = load_vuln_features
+        self.vuln_feature_dim = vuln_feature_dim
         
         data = np.load(npz_path)
         self.input_ids = data['input_ids']
@@ -1256,13 +1257,13 @@ class DevignDataset(Dataset):
             'lengths': torch.tensor(orig_len, dtype=torch.long)
         }
         
-        # Add vulnerability features if available
-        if self.vuln_features is not None:
-            item['vuln_features'] = torch.tensor(self.vuln_features[idx], dtype=torch.float)
-        else:
-            # Fallback zero vector if missing but expected (to prevent crashing)
-            # Use 25 dims based on devign_slice_v2 config (n_features=25)
-            item['vuln_features'] = torch.zeros(25, dtype=torch.float)
+        # Add vulnerability features only if loading was requested and data exists
+        if self.load_vuln_features:
+            if self.vuln_features is not None:
+                item['vuln_features'] = torch.tensor(self.vuln_features[idx], dtype=torch.float)
+            else:
+                # Fallback zero vector if expected but missing (to prevent crashing)
+                item['vuln_features'] = torch.zeros(self.vuln_feature_dim, dtype=torch.float)
             
         return item
 
@@ -1271,7 +1272,9 @@ def create_dataloaders(
     data_dir: str, 
     batch_size: int, 
     max_seq_length: int,
-    num_workers: int = 4
+    num_workers: int = 4,
+    load_vuln_features: bool = False,
+    vuln_feature_dim: int = 25
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Create train/val/test dataloaders"""
     
@@ -1280,9 +1283,9 @@ def create_dataloaders(
     test_path = Path(data_dir) / 'test.npz'
     
     if train_path.exists():
-        train_dataset = DevignDataset(str(train_path), max_seq_length)
-        val_dataset = DevignDataset(str(val_path), max_seq_length)
-        test_dataset = DevignDataset(str(test_path), max_seq_length)
+        train_dataset = DevignDataset(str(train_path), max_seq_length, load_vuln_features, vuln_feature_dim)
+        val_dataset = DevignDataset(str(val_path), max_seq_length, load_vuln_features, vuln_feature_dim)
+        test_dataset = DevignDataset(str(test_path), max_seq_length, load_vuln_features, vuln_feature_dim)
     else:
         raise ValueError(f"Could not find train.npz in {data_dir}")
     
@@ -1312,7 +1315,9 @@ train_loader, val_loader, test_loader = create_dataloaders(
     DATA_DIR, 
     config.batch_size, 
     config.max_seq_length,
-    config.num_workers
+    config.num_workers,
+    load_vuln_features=config.use_vuln_features,
+    vuln_feature_dim=config.vuln_feature_dim
 )
 
 # Class distribution
