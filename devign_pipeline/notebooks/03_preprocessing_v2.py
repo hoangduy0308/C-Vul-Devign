@@ -124,39 +124,23 @@ print(f"  Vulnerable: {(train_df['target'] == 1).sum()}")
 
 # %%
 from src.slicing.multi_slicer import MultiCodeSlicer, MultiSliceConfig, multi_slice_batch
-from src.vuln.dictionary import VulnDictionary
+from src.slicing.utils import find_criterion_lines
 
 # Initialize multi-slicer
 multi_slice_config = MultiSliceConfig(**MULTI_SLICE_CONFIG)
 slicer = MultiCodeSlicer(multi_slice_config)
 
-# Initialize dictionary for criterion detection
-vuln_dict = VulnDictionary()
-
-
-def find_criterion_lines(code: str, dictionary: VulnDictionary) -> list:
-    """Find criterion lines based on dangerous API calls and patterns."""
-    import re
-    
-    lines = code.split('\n')
-    criterion_lines = []
-    
-    dangerous_apis = dictionary.get_all_dangerous_functions()
-    
-    for i, line in enumerate(lines, 1):
-        for api in dangerous_apis:
-            if re.search(rf'\b{api}\s*\(', line):
-                criterion_lines.append(i)
-                break
-    
-    if not criterion_lines and lines:
-        criterion_lines = [len(lines) // 2] if len(lines) > 1 else [1]
-    
-    return criterion_lines
-
 
 def insert_sep_in_middle(code: str, sep_token: str = "[SEP]") -> str:
-    """Insert SEP token in the middle of code (by lines) for fallback cases."""
+    """
+    Insert SEP token in the middle of code (by lines) for fallback cases.
+    
+    IMPORTANT: The sep_token "[SEP]" is tokenized to 'SEP' token (ID=4) by the
+    HybridTokenizer. This is handled by the TOKEN_PATTERNS regex in hybrid_tokenizer.py:
+        ('SEP_TOKEN', r'\\[SEP\\]')  -> tokens.append('SEP')
+    
+    The 'SEP' token is guaranteed to be in vocab via SPECIAL_TOKENS dict with ID=4.
+    """
     lines = code.strip().split('\n')
     if len(lines) <= 1:
         return f"{code.strip()} {sep_token}"
@@ -179,7 +163,7 @@ def process_multi_slice_batch(df, batch_size=500):
         end = min(start + batch_size, n_samples)
         batch_codes = codes[start:end]
         
-        batch_criteria = [find_criterion_lines(code, vuln_dict) for code in batch_codes]
+        batch_criteria = [find_criterion_lines(code) for code in batch_codes]
         
         for code, criteria in zip(batch_codes, batch_criteria):
             try:
@@ -222,6 +206,10 @@ print(f"  Test: {len(test_combined)} samples")
 
 # %%
 from src.vuln.slice_features import extract_slice_features, extract_slice_features_batch, SLICE_FEATURE_NAMES
+from src.vuln.dictionary import VulnDictionary
+
+# Initialize dictionary for feature extraction
+vuln_dict = VulnDictionary()
 
 print(f"Feature count: {len(SLICE_FEATURE_NAMES)}")
 print(f"Features: {SLICE_FEATURE_NAMES}")
@@ -362,6 +350,20 @@ print(f"Sample vocab entries: {dict(list(vocab.items())[:15])}")
 preserved_apis_in_vocab = [api for api in DANGEROUS_APIS if api in vocab]
 print(f"\nDangerous APIs in vocab: {len(preserved_apis_in_vocab)}/{len(DANGEROUS_APIS)}")
 print(f"APIs: {preserved_apis_in_vocab[:10]}...")
+
+# Validate SEP token is in vocab (critical for multi-slice approach)
+if 'SEP' not in vocab:
+    raise ValueError("CRITICAL: 'SEP' token missing from vocab! Multi-slice will not work correctly.")
+else:
+    print(f"\n[OK] SEP token in vocab with ID={vocab['SEP']}")
+
+# Validate all special tokens
+special_tokens = ['PAD', 'UNK', 'BOS', 'EOS', 'SEP']
+missing_special = [t for t in special_tokens if t not in vocab]
+if missing_special:
+    raise ValueError(f"CRITICAL: Missing special tokens: {missing_special}")
+else:
+    print(f"[OK] All special tokens present: {[(t, vocab[t]) for t in special_tokens]}")
 
 
 def vectorize_batch(tokens_list, vocab, max_len, batch_size=500):

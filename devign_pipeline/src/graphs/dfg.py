@@ -94,6 +94,10 @@ class DFG:
         line_set = set(lines)
         return [idx for idx, node in enumerate(self.nodes) if node.line in line_set]
 
+    def is_empty(self) -> bool:
+        """Check if DFG has no nodes (invalid/empty graph)"""
+        return not self.nodes
+
 
 class DFGBuilder:
     """Build Data Flow Graph from parsed C/C++ code"""

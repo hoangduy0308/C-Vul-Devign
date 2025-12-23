@@ -95,21 +95,26 @@ class CodeSlicer:
         
         # Try graph-based slicing
         try:
-            # Only parse and build graphs if not provided
-            if cfg is None and dfg is None:
+            # Build missing graphs if not provided (treat empty graphs as missing)
+            cfg_empty = cfg is None or cfg.is_empty()
+            dfg_empty = dfg is None or dfg.is_empty()
+            
+            if cfg_empty or dfg_empty:
                 parse_result = self.parser.parse_with_fallback(processed_code)
                 if parse_result is None or not parse_result.nodes:
                     return self.window_slice(processed_code, valid_criterion)
                 
-                # Build CFG
-                cfg_builder = CFGBuilder()
-                cfg = cfg_builder.build(parse_result)
+                # Build CFG if missing or empty
+                if cfg_empty:
+                    cfg_builder = CFGBuilder()
+                    cfg = cfg_builder.build(parse_result)
                 
-                # Build DFG
-                dfg_builder = DFGBuilder()
-                dfg = dfg_builder.build(parse_result, focus_lines=valid_criterion)
+                # Build DFG if missing or empty
+                if dfg_empty:
+                    dfg_builder = DFGBuilder()
+                    dfg = dfg_builder.build(parse_result, focus_lines=valid_criterion)
             
-            if cfg is None and dfg is None:
+            if cfg is None or cfg.is_empty() or dfg is None or dfg.is_empty():
                 return self.window_slice(processed_code, valid_criterion)
             
             # Perform slicing based on type
@@ -138,20 +143,23 @@ class CodeSlicer:
         """
         included_lines: Set[int] = set(criterion_lines)
         
-        if cfg is None and dfg is None:
+        cfg_empty = cfg is None or cfg.is_empty()
+        dfg_empty = dfg is None or dfg.is_empty()
+        
+        if cfg_empty or dfg_empty:
             try:
                 parse_result = self.parser.parse_with_fallback(code)
                 if parse_result and parse_result.nodes:
-                    if cfg is None:
+                    if cfg_empty:
                         cfg_builder = CFGBuilder()
                         cfg = cfg_builder.build(parse_result)
-                    if dfg is None:
+                    if dfg_empty:
                         dfg_builder = DFGBuilder()
                         dfg = dfg_builder.build(parse_result, focus_lines=criterion_lines)
             except Exception:
                 return self.window_slice(code, criterion_lines)
         
-        if cfg is None and dfg is None:
+        if cfg is None or cfg.is_empty() or dfg is None or dfg.is_empty():
             return self.window_slice(code, criterion_lines)
         
         # Get data dependencies
@@ -188,20 +196,23 @@ class CodeSlicer:
         """
         included_lines: Set[int] = set(criterion_lines)
         
-        if cfg is None and dfg is None:
+        cfg_empty = cfg is None or cfg.is_empty()
+        dfg_empty = dfg is None or dfg.is_empty()
+        
+        if cfg_empty or dfg_empty:
             try:
                 parse_result = self.parser.parse_with_fallback(code)
                 if parse_result and parse_result.nodes:
-                    if cfg is None:
+                    if cfg_empty:
                         cfg_builder = CFGBuilder()
                         cfg = cfg_builder.build(parse_result)
-                    if dfg is None:
+                    if dfg_empty:
                         dfg_builder = DFGBuilder()
                         dfg = dfg_builder.build(parse_result, focus_lines=criterion_lines)
             except Exception:
                 return self.window_slice(code, criterion_lines)
         
-        if cfg is None and dfg is None:
+        if cfg is None or cfg.is_empty() or dfg is None or dfg.is_empty():
             return self.window_slice(code, criterion_lines)
         
         # Get forward data dependencies (dependents)

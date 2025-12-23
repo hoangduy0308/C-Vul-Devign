@@ -91,6 +91,10 @@ class CFG:
                 return block
         return None
 
+    def is_empty(self) -> bool:
+        """Check if CFG has no blocks (invalid/empty graph)"""
+        return not self.blocks
+
 
 # Control flow node types in tree-sitter C/C++
 CONTROL_FLOW_TYPES = {
