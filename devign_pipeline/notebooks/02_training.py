@@ -48,11 +48,11 @@ from tqdm.auto import tqdm
 # Environment setup
 if os.path.exists('/kaggle'):
     WORKING_DIR = '/kaggle/working'
-    DATA_DIR = '/kaggle/input/devign-final/processed'
+    DATA_DIR = '/kaggle/input/devign-final/processed_v2'
     sys.path.insert(0, '/tmp/devign_pipeline')
 else:
     WORKING_DIR = '/media/hdi/Hdii/Work/C Vul Devign'
-    DATA_DIR = '/media/hdi/Hdii/Work/C Vul Devign/Dataset/devign slice'
+    DATA_DIR = '/media/hdi/Hdii/Work/C Vul Devign/Dataset/devign_slice_v2'
     sys.path.insert(0, '/media/hdi/Hdii/Work/C Vul Devign/devign_pipeline')
 
 MODEL_DIR = os.path.join(WORKING_DIR, 'models')
@@ -87,9 +87,9 @@ data_config = load_data_config(DATA_DIR)
 
 class TrainConfig:
     """Training hyperparameters - optimized for Devign dataset"""
-    # Model (REDUCED CAPACITY to combat overfitting - vocab=266, 21K samples)
+    # Model (REDUCED CAPACITY to combat overfitting - vocab=371, 21K samples)
     # Oracle analysis showed Train F1=0.79 vs Best Val F1=0.71 at epoch 17
-    vocab_size: int = data_config.get('vocab_size', 266)
+    vocab_size: int = data_config.get('vocab_size', 371)
     embed_dim: int = 64           # DOWN from 128 - smaller vocab needs less embedding capacity
     hidden_dim: int = 128         # DOWN from 256 - BiGRU output = 256 (bidirectional)
     num_layers: int = 1           # DOWN from 2 - single layer less prone to overfitting
@@ -100,7 +100,8 @@ class TrainConfig:
     
     # Hybrid Model Features (V2)
     use_vuln_features: bool = True
-    vuln_feature_dim: int = len(data_config.get('vuln_feature_names', [])) or 26
+    # Read from n_features or feature_names (devign_slice_v2 format)
+    vuln_feature_dim: int = data_config.get('n_features') or len(data_config.get('feature_names', [])) or 25
     vuln_feature_hidden_dim: int = 64
     vuln_feature_dropout: float = 0.2
     
@@ -243,7 +244,7 @@ class ImprovedConfig(TrainConfig):
     
     Key changes:
     - Reduced hidden_dim (192 → 128) - less overfitting with smaller capacity
-    - Reduced vuln_feature_hidden_dim (96 → 48) - simpler MLP for 26 features
+    - Reduced vuln_feature_hidden_dim (96 → 48) - simpler MLP for 25 features
     - Added LayerNorm before classifier (enabled via use_layer_norm flag)
     - Token augmentation (dropout + masking) for robustness
     - SWA (Stochastic Weight Averaging) for better generalization
@@ -1139,10 +1140,13 @@ class AdvancedConfigV5(FinalConfig):
     use_diverse_ensemble: bool = False         # DISABLED
     ensemble_dropout_variations: tuple = (0.0,)
     
-    # --- Threshold optimization: F1-MAXIMIZING (Oracle V5 key fix) ---
-    # Use simple F1 maximization, not recall_constrained
-    threshold_min: float = 0.30
-    threshold_max: float = 0.70
+    # --- Threshold optimization: FIXED at 0.5 for baseline testing ---
+    # Force T=0.5 to avoid threshold gaming that causes:
+    # - Low threshold (T=0.30) → 90% predictions "vulnerable" → low precision (47%)
+    # - Artificially high recall (93%) that doesn't reflect true model quality
+    # Re-enable optimization only after model achieves good AUC (>85%)
+    threshold_min: float = 0.50
+    threshold_max: float = 0.50
     threshold_step: float = 0.01
     threshold_objective: str = 'f1'            # CHANGED from 'recall_constrained_strict'
     min_recall_constraint: float = 0.70        # Lower floor if using constrained mode
@@ -1257,8 +1261,8 @@ class DevignDataset(Dataset):
             item['vuln_features'] = torch.tensor(self.vuln_features[idx], dtype=torch.float)
         else:
             # Fallback zero vector if missing but expected (to prevent crashing)
-            # Assuming 26 dims based on config
-            item['vuln_features'] = torch.zeros(26, dtype=torch.float)
+            # Use 25 dims based on devign_slice_v2 config (n_features=25)
+            item['vuln_features'] = torch.zeros(25, dtype=torch.float)
             
         return item
 

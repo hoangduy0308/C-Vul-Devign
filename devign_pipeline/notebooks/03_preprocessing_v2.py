@@ -155,6 +155,17 @@ def find_criterion_lines(code: str, dictionary: VulnDictionary) -> list:
     return criterion_lines
 
 
+def insert_sep_in_middle(code: str, sep_token: str = "[SEP]") -> str:
+    """Insert SEP token in the middle of code (by lines) for fallback cases."""
+    lines = code.strip().split('\n')
+    if len(lines) <= 1:
+        return f"{code.strip()} {sep_token}"
+    mid = len(lines) // 2
+    before = '\n'.join(lines[:mid])
+    after = '\n'.join(lines[mid:])
+    return f"{before} {sep_token} {after}"
+
+
 def process_multi_slice_batch(df, batch_size=500):
     """Process multi-slicing in batches with fallback for short slices."""
     codes = df['func'].tolist()
@@ -175,16 +186,16 @@ def process_multi_slice_batch(df, batch_size=500):
                 result = slicer.multi_slice(code, criteria)
                 combined = result.combined_code
                 
-                # Check if slice is too short - fallback to full function
+                # Check if slice is too short - fallback to full function with SEP
                 if estimate_tokens(combined) < MIN_SLICE_TOKENS:
-                    combined = code
+                    combined = insert_sep_in_middle(code)
                     fallback_count += 1
                 
                 slice_results.append(result)
                 combined_codes.append(combined)
             except Exception as e:
                 slice_results.append(None)
-                combined_codes.append(code)
+                combined_codes.append(insert_sep_in_middle(code))
                 fallback_count += 1
     
     print(f"  Fallback to full function: {fallback_count} samples")
@@ -406,6 +417,50 @@ def features_to_array(features_list):
     return arr
 
 
+def normalize_features(train_features, val_features, test_features, feature_names):
+    """
+    Normalize features using log1p + z-score.
+    Uses train statistics for all splits to prevent data leakage.
+    """
+    count_features = [
+        'loc_slice', 'stmt_count_slice', 'dangerous_call_count_slice',
+        'dangerous_call_without_check_count_slice', 'pointer_deref_count_slice',
+        'pointer_deref_without_null_check_count_slice', 'array_access_count_slice',
+        'array_access_without_bounds_check_count_slice', 'null_check_count_slice',
+        'bounds_check_count_slice', 'loc_full'
+    ]
+    
+    feature_names_list = list(feature_names)
+    
+    train_norm = train_features.copy()
+    val_norm = val_features.copy()
+    test_norm = test_features.copy()
+    
+    for feat_name in count_features:
+        if feat_name in feature_names_list:
+            idx = feature_names_list.index(feat_name)
+            train_norm[:, idx] = np.log1p(train_norm[:, idx])
+            val_norm[:, idx] = np.log1p(val_norm[:, idx])
+            test_norm[:, idx] = np.log1p(test_norm[:, idx])
+    
+    train_mean = np.mean(train_norm, axis=0)
+    train_std = np.std(train_norm, axis=0)
+    train_std[train_std == 0] = 1.0
+    
+    train_norm = (train_norm - train_mean) / train_std
+    val_norm = (val_norm - train_mean) / train_std
+    test_norm = (test_norm - train_mean) / train_std
+    
+    norm_stats = {
+        'mean': train_mean.tolist(),
+        'std': train_std.tolist(),
+        'count_features': count_features,
+        'feature_names': feature_names_list
+    }
+    
+    return train_norm, val_norm, test_norm, norm_stats
+
+
 # Convert features to arrays
 print("Converting features to arrays...")
 train_vuln_features = features_to_array(train_features)
@@ -415,6 +470,24 @@ test_vuln_features = features_to_array(test_features)
 print(f"  Train: {train_vuln_features.shape}")
 print(f"  Val: {val_vuln_features.shape}")
 print(f"  Test: {test_vuln_features.shape}")
+
+# Feature statistics BEFORE normalization
+print("\n--- Feature Stats BEFORE Normalization ---")
+for i, name in enumerate(SLICE_FEATURE_NAMES):
+    col = train_vuln_features[:, i]
+    print(f"  {name}: mean={np.mean(col):.3f}, std={np.std(col):.3f}, max={np.max(col):.1f}")
+
+# Normalize features
+print("\nNormalizing features (log1p + z-score)...")
+train_vuln_features, val_vuln_features, test_vuln_features, norm_stats = normalize_features(
+    train_vuln_features, val_vuln_features, test_vuln_features, SLICE_FEATURE_NAMES
+)
+
+# Feature statistics AFTER normalization
+print("\n--- Feature Stats AFTER Normalization ---")
+for i, name in enumerate(SLICE_FEATURE_NAMES):
+    col = train_vuln_features[:, i]
+    print(f"  {name}: mean={np.mean(col):.3f}, std={np.std(col):.3f}, range=[{np.min(col):.2f}, {np.max(col):.2f}]")
 
 # Get labels
 train_labels = train_df['target'].values.astype(np.int32)
@@ -485,6 +558,11 @@ config = {
 
 with open(os.path.join(OUTPUT_DIR, 'config.json'), 'w') as f:
     json.dump(config, f, indent=2)
+
+# Save normalization stats for inference
+print("Saving normalization stats...")
+with open(os.path.join(OUTPUT_DIR, 'feature_norm_stats.json'), 'w') as f:
+    json.dump(norm_stats, f, indent=2)
 
 print("\n✓ All outputs saved!")
 

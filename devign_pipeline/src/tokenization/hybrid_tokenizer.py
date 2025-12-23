@@ -73,6 +73,43 @@ DANGEROUS_APIS = {
     'wcstok', 'wmemcpy', 'wmemset',
 }
 
+# Defense APIs - functions that indicate safety checks/validation
+# These should be preserved to help model distinguish safe from vulnerable code
+DEFENSE_APIS = {
+    # Safe string functions
+    'snprintf', 'strncpy', 'strncat', 'strlcpy', 'strlcat',
+    'strncmp', 'strncasecmp', 'strnlen',
+    # Safe memory functions
+    'memcpy_s', 'memmove_s', 'memset_s', 'memcmp',
+    # Assertions and checks
+    'assert', 'static_assert', 'ASSERT', 'BUG_ON', 'WARN_ON',
+    # Common validation patterns (function name contains these)
+    'check', 'validate', 'verify', 'sanitize',
+    # Bounds checking
+    'bounds_check', 'range_check', 'size_check', 'length_check',
+    # Null checking patterns
+    'is_null', 'is_valid', 'is_empty', 'isnull',
+    # Safe allocation wrappers
+    'safe_malloc', 'safe_calloc', 'safe_realloc', 'xmalloc', 'kmalloc',
+    # Error handling
+    'perror', 'strerror', 'errno',
+}
+
+# Patterns to match in function names for defense functions
+DEFENSE_PATTERNS = ['check', 'valid', 'verify', 'sanit', 'bound', 'range', 'safe', 'assert']
+
+
+def is_defense_function(name: str) -> bool:
+    """Check if function name indicates a defense/validation function."""
+    if name in DEFENSE_APIS:
+        return True
+    name_lower = name.lower()
+    for pattern in DEFENSE_PATTERNS:
+        if pattern in name_lower:
+            return True
+    return False
+
+
 C_KEYWORDS = {
     'auto', 'break', 'case', 'char', 'const', 'continue', 'default', 'do',
     'double', 'else', 'enum', 'extern', 'float', 'for', 'goto', 'if',
@@ -204,6 +241,8 @@ class HybridTokenizer:
                 return 'ID'
         
         if is_function_call:
+            if is_defense_function(value):
+                return value
             return 'FUNC'
         
         return 'ID'
@@ -345,6 +384,8 @@ class CanonicalTokenizer(HybridTokenizer):
                 return self._get_canonical_token(value)
         
         if is_function_call:
+            if is_defense_function(value):
+                return value
             return 'FUNC'
         
         return self._get_canonical_token(value)
@@ -397,6 +438,14 @@ def build_hybrid_vocab(codes: List[str], min_freq: int = 2,
         token_counts.update(tokens)
     
     vocab = {tok: idx for tok, idx in SPECIAL_TOKENS.items()}
+    
+    for api in DANGEROUS_APIS:
+        if api not in vocab:
+            vocab[api] = len(vocab)
+    
+    for api in DEFENSE_APIS:
+        if api not in vocab:
+            vocab[api] = len(vocab)
     
     if use_canonical:
         canonical_tokens = get_canonical_vocab_tokens()
