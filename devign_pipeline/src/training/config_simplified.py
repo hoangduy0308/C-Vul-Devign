@@ -44,8 +44,8 @@ class BaselineConfig:
     # ============= REGULARIZATION =============
     # Oracle: Pick ONE dropout level, don't stack multiple
     embedding_dropout: float = 0.15
-    rnn_dropout: float = 0.35
-    classifier_dropout: float = 0.35
+    rnn_dropout: float = 0.25
+    classifier_dropout: float = 0.25
     
     # Weight decay
     weight_decay: float = 1e-4
@@ -60,6 +60,10 @@ class BaselineConfig:
     
     # Label smoothing: mild or none (Oracle recommends 0.0-0.03)
     label_smoothing: float = 0.0  # OFF by default for clean baseline
+    
+    # pos_weight override: Set to 1.0 for balanced data (ratio ~1.18:1)
+    # Weighting hurts precision with nearly balanced classes
+    pos_weight_override: Optional[float] = 1.0
     
     # ============= TRAINING =============
     batch_size: int = 128
@@ -83,7 +87,8 @@ class BaselineConfig:
     
     # ============= SWA =============
     # Oracle: SWA alone can replace part of ensemble
-    use_swa: bool = True
+    # Disabled: Early stopping triggers at epoch 9-12, but SWA starts at epoch 15
+    use_swa: bool = False
     swa_start_epoch: int = 15
     swa_lr: float = 5e-5
     

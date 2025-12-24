@@ -144,6 +144,27 @@ def compute_pos_weight(labels: np.ndarray) -> float:
     return float(pos_weight)
 
 
+def get_pos_weight_for_config(config, labels: np.ndarray) -> float:
+    """
+    Get pos_weight based on config settings.
+    
+    If config.pos_weight_override is set, use that value directly.
+    Otherwise, compute from label distribution.
+    
+    Args:
+        config: Training config with optional pos_weight_override field
+        labels: Array of labels (0 or 1)
+    
+    Returns:
+        pos_weight value to use for BCEWithLogitsLoss
+    """
+    if hasattr(config, 'pos_weight_override') and config.pos_weight_override is not None:
+        logger.info(f"Using pos_weight_override: {config.pos_weight_override}")
+        return config.pos_weight_override
+    else:
+        return compute_pos_weight(labels)
+
+
 # ============= METRICS =============
 
 @dataclass

@@ -59,6 +59,7 @@ from src.training.config_simplified import (
 from src.training.train_simplified import (
     SimplifiedLoss,
     compute_pos_weight,
+    get_pos_weight_for_config,
     compute_metrics,
     EvalMetrics,
     aggregate_results,
@@ -588,7 +589,7 @@ def train_epoch(
         
         total_loss += loss.item() * config.accumulation_steps
         
-        probs = torch.softmax(logits.detach(), dim=1)[:, 1].cpu().numpy()
+        probs = torch.sigmoid(logits.detach()[:, 1]).cpu().numpy()
         all_probs.extend(probs)
         all_labels.extend(labels.cpu().numpy())
     
@@ -637,7 +638,7 @@ def evaluate(
             loss = criterion(logits, labels)
         
         total_loss += loss.item()
-        probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
+        probs = torch.sigmoid(logits[:, 1]).cpu().numpy()
         all_probs.extend(probs)
         all_labels.extend(labels.cpu().numpy())
     
@@ -705,9 +706,9 @@ def train_single_seed(
     # Build model
     model = build_model(config, pretrained_embedding)
     
-    # Compute pos_weight from training data
+    # Compute pos_weight from training data or use override
     train_labels = train_loader.dataset.labels
-    pos_weight = compute_pos_weight(train_labels)
+    pos_weight = get_pos_weight_for_config(config, train_labels)
     
     # Create loss function
     criterion = SimplifiedLoss(
@@ -881,7 +882,7 @@ def train_multi_seed(
     
     # Create criterion for test eval
     test_labels = test_loader.dataset.labels
-    pos_weight = compute_pos_weight(test_labels)
+    pos_weight = get_pos_weight_for_config(config, test_labels)
     criterion = SimplifiedLoss(loss_type=config.loss_type, pos_weight=pos_weight).to(DEVICE)
     
     test_metrics = evaluate(best_model, test_loader, criterion, config, DEVICE)
