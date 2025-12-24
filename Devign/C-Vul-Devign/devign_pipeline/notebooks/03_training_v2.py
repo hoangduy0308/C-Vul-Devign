@@ -97,10 +97,10 @@ class HierarchicalBiGRU(nn.Module):
         super().__init__()
         self.slice_hidden = slice_hidden
         self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
-        self.embed_drop = nn.Dropout(0.15)
+        self.embed_drop = nn.Dropout(0.3)  # Increased from 0.15
         
         # Global encoder
-        self.global_gru = nn.GRU(embed_dim, hidden_dim, num_layers=2, bidirectional=True, batch_first=True, dropout=0.25)
+        self.global_gru = nn.GRU(embed_dim, hidden_dim, num_layers=2, bidirectional=True, batch_first=True, dropout=0.4)  # Increased from 0.25
         self.global_attn = nn.Sequential(nn.Linear(hidden_dim*2, hidden_dim), nn.Tanh(), nn.Linear(hidden_dim, 1))
         
         # Slice encoder
@@ -112,17 +112,17 @@ class HierarchicalBiGRU(nn.Module):
         self.slice_seq_attn = nn.Sequential(nn.Linear(slice_hidden*2, slice_hidden), nn.Tanh(), nn.Linear(slice_hidden, 1))
         
         # Slice feature fusion (concat+MLP)
-        self.slice_feat_mlp = nn.Sequential(nn.Linear(slice_feat_dim, 128), nn.LayerNorm(128), nn.GELU(), nn.Dropout(0.2))
+        self.slice_feat_mlp = nn.Sequential(nn.Linear(slice_feat_dim, 128), nn.LayerNorm(128), nn.GELU(), nn.Dropout(0.4))  # Increased from 0.2
         self.slice_fusion = nn.Sequential(
             nn.Linear(slice_hidden*2 + 128, slice_hidden*2),
             nn.GELU(),
-            nn.Dropout(0.2)
+            nn.Dropout(0.4)  # Increased from 0.2
         )
         self.slice_level_attn = nn.Sequential(nn.Linear(slice_hidden*2, slice_hidden), nn.Tanh(), nn.Linear(slice_hidden, 1))
         
         # Vuln features MLP (dynamic dim)
         self.vuln_dim = vuln_dim
-        self.vuln_mlp = nn.Sequential(nn.BatchNorm1d(vuln_dim), nn.Linear(vuln_dim, 64), nn.GELU(), nn.Dropout(0.2))
+        self.vuln_mlp = nn.Sequential(nn.BatchNorm1d(vuln_dim), nn.Linear(vuln_dim, 64), nn.GELU(), nn.Dropout(0.4))  # Increased from 0.2
         
         # Feature-level gating over vuln representation (Oracle improvement: replaces logit-shift)
         self.feature_gate = nn.Sequential(
@@ -138,7 +138,7 @@ class HierarchicalBiGRU(nn.Module):
         self.classifier = nn.Sequential(
             nn.LayerNorm(hidden_dim*2 + slice_hidden*2 + 64), 
             nn.Linear(hidden_dim*2 + slice_hidden*2 + 64, 256), 
-            nn.GELU(), nn.Dropout(0.3), 
+            nn.GELU(), nn.Dropout(0.5),  # Increased from 0.3 
             nn.Linear(256, 2)
         )
     
@@ -295,8 +295,16 @@ def train_single_model(seed, train_ds, val_ds, n_neg, n_pos, data_config):
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=2, factor=0.5)
     scaler = GradScaler()
     
-    best_f1, patience = 0, 0
+    best_f1, patience_counter = 0, 0
+    EARLY_STOP_PATIENCE = 4  # Dừng sớm hơn để tránh overfitting
     model_path = f'{MODEL_DIR}/best_v2_seed{seed}.pt'
+    
+    # Training history
+    history = {
+        'train_loss': [], 'train_f1': [], 'train_auc': [],
+        'val_loss': [], 'val_f1': [], 'val_auc': [],
+        'val_opt_f1': [], 'val_prec': [], 'val_rec': []
+    }
     
     for epoch in range(1, 31):
         print(f"\n{'='*50}\nEpoch {epoch}/30 (seed={seed})")
@@ -305,17 +313,31 @@ def train_single_model(seed, train_ds, val_ds, n_neg, n_pos, data_config):
         scheduler.step(val_m['opt_f1'])
         print(f"Train: loss={train_m['loss']:.4f}, F1={train_m['f1']:.4f}, AUC={train_m['auc']:.4f}")
         print(f"Val: loss={val_m['loss']:.4f}, F1={val_m['f1']:.4f}, AUC={val_m['auc']:.4f}, OptF1={val_m['opt_f1']:.4f}, Prec={val_m['opt_prec']:.4f}, Rec={val_m['opt_rec']:.4f}")
+        
+        # Save history
+        history['train_loss'].append(train_m['loss'])
+        history['train_f1'].append(train_m['f1'])
+        history['train_auc'].append(train_m['auc'])
+        history['val_loss'].append(val_m['loss'])
+        history['val_f1'].append(val_m['f1'])
+        history['val_auc'].append(val_m['auc'])
+        history['val_opt_f1'].append(val_m['opt_f1'])
+        history['val_prec'].append(val_m['opt_prec'])
+        history['val_rec'].append(val_m['opt_rec'])
+        
         if val_m['opt_f1'] > best_f1:
-            best_f1 = val_m['opt_f1']; patience = 0
+            best_f1 = val_m['opt_f1']; patience_counter = 0
             torch.save(model.state_dict(), model_path)
             print(f"★ Best F1: {best_f1:.4f}")
         else:
-            patience += 1
-            if patience >= 6: print("Early stop!"); break
+            patience_counter += 1
+            if patience_counter >= EARLY_STOP_PATIENCE: 
+                print(f"Early stop at epoch {epoch}!")
+                break
     
     # Load best model
     model.load_state_dict(torch.load(model_path, weights_only=False))
-    return model, best_f1
+    return model, best_f1, history
 
 # ===== MAIN TRAINING LOOP =====
 print(f"\n{'='*60}")
@@ -325,14 +347,16 @@ print(f"{'='*60}")
 models = []
 val_probs_list = []
 test_probs_list = []
+all_histories = []
 
 val_loader = DataLoader(val_ds, batch_size=64, num_workers=2, pin_memory=True)
 test_loader = DataLoader(test_ds, batch_size=64, num_workers=2, pin_memory=True)
 
 for seed_idx in range(NUM_SEEDS):
     seed = 42 + seed_idx * 1000
-    model, best_f1 = train_single_model(seed, train_ds, val_ds, n_neg, n_pos, data_config)
+    model, best_f1, history = train_single_model(seed, train_ds, val_ds, n_neg, n_pos, data_config)
     models.append(model)
+    all_histories.append(history)
     
     # Get predictions for ensemble
     _, _, val_probs = get_predictions(model, val_loader)
@@ -445,7 +469,7 @@ axes[0].grid(True, alpha=0.3)
 precision, recall, _ = precision_recall_curve(test_labels, test_probs_cal)
 pr_auc = auc(recall, precision)
 axes[1].plot(recall, precision, color='green', lw=2, label=f'PR curve (AUC = {pr_auc:.4f})')
-axes[1].axhline(y=test_prec, color='red', linestyle='--', alpha=0.5, label=f'Precision @ opt_t={test_prec:.4f}')
+axes[1].axhline(y=test_prec, color='red', linestyle='--', alpha=0.5, label=f'Precision @ t={best_t:.2f} = {test_prec:.4f}')
 axes[1].set_xlim([0.0, 1.0])
 axes[1].set_ylim([0.0, 1.05])
 axes[1].set_xlabel('Recall', fontsize=12)
@@ -476,6 +500,76 @@ plt.tight_layout()
 plt.savefig(f'{PLOTS_DIR}/metrics_summary.png', dpi=150)
 plt.show()
 print(f"Saved metrics summary to {PLOTS_DIR}/metrics_summary.png")
+
+# ===== TRAINING HISTORY PLOTS =====
+print("\nGenerating training history plots...")
+
+# Plot for each seed (or average if multiple seeds)
+if len(all_histories) == 1:
+    history = all_histories[0]
+else:
+    # Average histories across seeds
+    history = {}
+    for key in all_histories[0].keys():
+        min_len = min(len(h[key]) for h in all_histories)
+        history[key] = [np.mean([h[key][i] for h in all_histories]) for i in range(min_len)]
+
+epochs = range(1, len(history['train_loss']) + 1)
+
+# 1. Loss curve
+fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+axes[0, 0].plot(epochs, history['train_loss'], 'b-', label='Train Loss', linewidth=2)
+axes[0, 0].plot(epochs, history['val_loss'], 'r-', label='Val Loss', linewidth=2)
+axes[0, 0].set_xlabel('Epoch')
+axes[0, 0].set_ylabel('Loss')
+axes[0, 0].set_title('Training & Validation Loss', fontweight='bold')
+axes[0, 0].legend()
+axes[0, 0].grid(True, alpha=0.3)
+
+# 2. F1 curve
+axes[0, 1].plot(epochs, history['train_f1'], 'b-', label='Train F1', linewidth=2)
+axes[0, 1].plot(epochs, history['val_f1'], 'r-', label='Val F1', linewidth=2)
+axes[0, 1].plot(epochs, history['val_opt_f1'], 'g--', label='Val OptF1', linewidth=2)
+best_epoch = np.argmax(history['val_opt_f1']) + 1
+best_f1_val = max(history['val_opt_f1'])
+axes[0, 1].axvline(x=best_epoch, color='green', linestyle=':', alpha=0.7, label=f'Best (epoch {best_epoch})')
+axes[0, 1].scatter([best_epoch], [best_f1_val], color='green', s=100, zorder=5)
+axes[0, 1].set_xlabel('Epoch')
+axes[0, 1].set_ylabel('F1 Score')
+axes[0, 1].set_title('F1 Score over Epochs', fontweight='bold')
+axes[0, 1].legend()
+axes[0, 1].grid(True, alpha=0.3)
+
+# 3. AUC curve
+axes[1, 0].plot(epochs, history['train_auc'], 'b-', label='Train AUC', linewidth=2)
+axes[1, 0].plot(epochs, history['val_auc'], 'r-', label='Val AUC', linewidth=2)
+axes[1, 0].set_xlabel('Epoch')
+axes[1, 0].set_ylabel('AUC')
+axes[1, 0].set_title('AUC over Epochs', fontweight='bold')
+axes[1, 0].legend()
+axes[1, 0].grid(True, alpha=0.3)
+
+# 4. Precision/Recall curve
+axes[1, 1].plot(epochs, history['val_prec'], 'g-', label='Precision', linewidth=2)
+axes[1, 1].plot(epochs, history['val_rec'], 'm-', label='Recall', linewidth=2)
+axes[1, 1].plot(epochs, history['val_opt_f1'], 'b--', label='Val OptF1', linewidth=2, alpha=0.7)
+axes[1, 1].set_xlabel('Epoch')
+axes[1, 1].set_ylabel('Score')
+axes[1, 1].set_title('Precision, Recall & F1 (Validation)', fontweight='bold')
+axes[1, 1].legend()
+axes[1, 1].grid(True, alpha=0.3)
+
+plt.suptitle('Training History', fontsize=14, fontweight='bold', y=1.02)
+plt.tight_layout()
+plt.savefig(f'{PLOTS_DIR}/training_history.png', dpi=150)
+plt.show()
+print(f"Saved training history to {PLOTS_DIR}/training_history.png")
+
+# Save history to JSON
+with open(f'{OUTPUT_DIR}/training_history.json', 'w') as f:
+    json.dump(history, f, indent=2)
+print(f"Saved training history data to {OUTPUT_DIR}/training_history.json")
 
 print(f"\n{'='*60}")
 print(f"All outputs saved to: {OUTPUT_DIR}")

@@ -73,9 +73,16 @@ def plot_training_history(
     ax.plot(epochs, history['train_f1'], 'b-', label='Train F1', linewidth=2)
     ax.plot(epochs, history['val_f1'], 'r-', label='Val F1', linewidth=2)
     
-    # Mark best F1
-    best_epoch = np.argmax(history['val_f1']) + 1
-    best_f1 = max(history['val_f1'])
+    # Add val_opt_f1 if available
+    if 'val_opt_f1' in history:
+        ax.plot(epochs, history['val_opt_f1'], 'g--', label='Val OptF1', linewidth=2, alpha=0.8)
+        # Mark best based on val_opt_f1
+        best_epoch = np.argmax(history['val_opt_f1']) + 1
+        best_f1 = max(history['val_opt_f1'])
+    else:
+        best_epoch = np.argmax(history['val_f1']) + 1
+        best_f1 = max(history['val_f1'])
+    
     ax.axvline(x=best_epoch, color='g', linestyle='--', alpha=0.7, label=f'Best (epoch {best_epoch})')
     ax.scatter([best_epoch], [best_f1], color='g', s=100, zorder=5)
     
@@ -105,12 +112,19 @@ def plot_training_history(
         plt.show()
     plt.close()
     
-    # 4. Precision/Recall plot
-    if 'val_precision' in history and 'val_recall' in history:
+    # 4. Precision/Recall plot (support both naming conventions)
+    prec_key = 'val_prec' if 'val_prec' in history else 'val_precision'
+    rec_key = 'val_rec' if 'val_rec' in history else 'val_recall'
+    
+    if prec_key in history and rec_key in history:
         fig, ax = plt.subplots(figsize=(10, 6))
-        ax.plot(epochs, history['val_precision'], 'g-', label='Precision', linewidth=2)
-        ax.plot(epochs, history['val_recall'], 'm-', label='Recall', linewidth=2)
-        ax.plot(epochs, history['val_f1'], 'b--', label='F1', linewidth=2, alpha=0.7)
+        ax.plot(epochs, history[prec_key], 'g-', label='Precision', linewidth=2)
+        ax.plot(epochs, history[rec_key], 'm-', label='Recall', linewidth=2)
+        
+        # Use val_opt_f1 if available, else val_f1
+        f1_key = 'val_opt_f1' if 'val_opt_f1' in history else 'val_f1'
+        ax.plot(epochs, history[f1_key], 'b--', label='F1 (optimal)' if 'val_opt_f1' in history else 'F1', linewidth=2, alpha=0.7)
+        
         ax.set_xlabel('Epoch', fontsize=12)
         ax.set_ylabel('Score', fontsize=12)
         ax.set_title('Validation Precision, Recall & F1', fontsize=14, fontweight='bold')
@@ -128,30 +142,40 @@ def plot_training_history(
     # Loss
     axes[0, 0].plot(epochs, history['train_loss'], 'b-', label='Train', linewidth=2)
     axes[0, 0].plot(epochs, history['val_loss'], 'r-', label='Val', linewidth=2)
-    axes[0, 0].set_title('Loss', fontsize=12, fontweight='bold')
+    axes[0, 0].set_title('Training & Validation Loss', fontsize=12, fontweight='bold')
     axes[0, 0].legend()
     axes[0, 0].grid(True, alpha=0.3)
     
-    # F1
-    axes[0, 1].plot(epochs, history['train_f1'], 'b-', label='Train', linewidth=2)
-    axes[0, 1].plot(epochs, history['val_f1'], 'r-', label='Val', linewidth=2)
-    axes[0, 1].set_title('F1 Score', fontsize=12, fontweight='bold')
-    axes[0, 1].legend()
+    # F1 - include val_opt_f1 if available
+    axes[0, 1].plot(epochs, history['train_f1'], 'b-', label='Train F1', linewidth=2)
+    axes[0, 1].plot(epochs, history['val_f1'], 'r-', label='Val F1', linewidth=2)
+    if 'val_opt_f1' in history:
+        axes[0, 1].plot(epochs, history['val_opt_f1'], 'g--', label='Val OptF1', linewidth=2, alpha=0.8)
+        best_epoch = np.argmax(history['val_opt_f1']) + 1
+        best_f1 = max(history['val_opt_f1'])
+        axes[0, 1].axvline(x=best_epoch, color='g', linestyle=':', alpha=0.5)
+        axes[0, 1].scatter([best_epoch], [best_f1], color='g', s=80, zorder=5, label=f'Best (ep {best_epoch})')
+    axes[0, 1].set_title('F1 Score over Epochs', fontsize=12, fontweight='bold')
+    axes[0, 1].legend(fontsize=9)
     axes[0, 1].grid(True, alpha=0.3)
     
     # AUC
     axes[1, 0].plot(epochs, history['train_auc'], 'b-', label='Train', linewidth=2)
     axes[1, 0].plot(epochs, history['val_auc'], 'r-', label='Val', linewidth=2)
-    axes[1, 0].set_title('AUC', fontsize=12, fontweight='bold')
+    axes[1, 0].set_title('AUC over Epochs', fontsize=12, fontweight='bold')
     axes[1, 0].legend()
     axes[1, 0].grid(True, alpha=0.3)
     
-    # Precision/Recall
-    if 'val_precision' in history:
-        axes[1, 1].plot(epochs, history['val_precision'], 'g-', label='Precision', linewidth=2)
-        axes[1, 1].plot(epochs, history['val_recall'], 'm-', label='Recall', linewidth=2)
-        axes[1, 1].set_title('Precision & Recall', fontsize=12, fontweight='bold')
-        axes[1, 1].legend()
+    # Precision/Recall - support both naming conventions
+    prec_key = 'val_prec' if 'val_prec' in history else 'val_precision'
+    rec_key = 'val_rec' if 'val_rec' in history else 'val_recall'
+    if prec_key in history:
+        axes[1, 1].plot(epochs, history[prec_key], 'g-', label='Precision', linewidth=2)
+        axes[1, 1].plot(epochs, history[rec_key], 'm-', label='Recall', linewidth=2)
+        f1_key = 'val_opt_f1' if 'val_opt_f1' in history else 'val_f1'
+        axes[1, 1].plot(epochs, history[f1_key], 'b--', label='F1', linewidth=2, alpha=0.7)
+        axes[1, 1].set_title('Precision, Recall & F1 (Validation)', fontsize=12, fontweight='bold')
+        axes[1, 1].legend(fontsize=9)
         axes[1, 1].grid(True, alpha=0.3)
     
     for ax in axes.flat:

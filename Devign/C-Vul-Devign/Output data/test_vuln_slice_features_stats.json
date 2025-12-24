@@ -1,0 +1,2115 @@
+{
+  "split": "test",
+  "num_samples": 2726,
+  "num_slices": 6,
+  "num_features": 26,
+  "array": "slice_vuln_features",
+  "feature_stats": {
+    "loc": {
+      "overall": {
+        "mean": 4.8928,
+        "std": 29.3415,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 4.0,
+        "max": 2885.0,
+        "num_nonzero": 6094,
+        "num_zero": 10262
+      },
+      "per_slice": {
+        "0": {
+          "mean": 10.3008,
+          "std": 67.0738,
+          "min": 1.0,
+          "p25": 2.0,
+          "median": 5.0,
+          "p75": 10.0,
+          "max": 2885.0,
+          "num_nonzero": 2726,
+          "num_zero": 0
+        },
+        "1": {
+          "mean": 13.1064,
+          "std": 18.2806,
+          "min": 0.0,
+          "p25": 2.0,
+          "median": 7.0,
+          "p75": 17.0,
+          "max": 187.0,
+          "num_nonzero": 2101,
+          "num_zero": 625
+        },
+        "2": {
+          "mean": 1.3489,
+          "std": 5.1116,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 93.0,
+          "num_nonzero": 441,
+          "num_zero": 2285
+        },
+        "3": {
+          "mean": 2.4288,
+          "std": 9.1623,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 125.0,
+          "num_nonzero": 414,
+          "num_zero": 2312
+        },
+        "4": {
+          "mean": 0.8569,
+          "std": 4.2858,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 76.0,
+          "num_nonzero": 226,
+          "num_zero": 2500
+        },
+        "5": {
+          "mean": 1.3147,
+          "std": 7.7201,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 114.0,
+          "num_nonzero": 186,
+          "num_zero": 2540
+        }
+      }
+    },
+    "stmt_count": {
+      "overall": {
+        "mean": 3.628,
+        "std": 18.1632,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 3.0,
+        "max": 1668.0,
+        "num_nonzero": 5808,
+        "num_zero": 10548
+      },
+      "per_slice": {
+        "0": {
+          "mean": 7.7553,
+          "std": 40.108,
+          "min": 0.0,
+          "p25": 1.0,
+          "median": 4.0,
+          "p75": 8.0,
+          "max": 1668.0,
+          "num_nonzero": 2464,
+          "num_zero": 262
+        },
+        "1": {
+          "mean": 9.7007,
+          "std": 14.108,
+          "min": 0.0,
+          "p25": 1.0,
+          "median": 5.0,
+          "p75": 13.0,
+          "max": 223.0,
+          "num_nonzero": 2100,
+          "num_zero": 626
+        },
+        "2": {
+          "mean": 1.0734,
+          "std": 3.983,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 65.0,
+          "num_nonzero": 423,
+          "num_zero": 2303
+        },
+        "3": {
+          "mean": 1.6996,
+          "std": 6.3008,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 121.0,
+          "num_nonzero": 413,
+          "num_zero": 2313
+        },
+        "4": {
+          "mean": 0.6886,
+          "std": 3.3541,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 47.0,
+          "num_nonzero": 222,
+          "num_zero": 2504
+        },
+        "5": {
+          "mean": 0.8503,
+          "std": 4.9402,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 105.0,
+          "num_nonzero": 186,
+          "num_zero": 2540
+        }
+      }
+    },
+    "dangerous_call_count": {
+      "overall": {
+        "mean": 0.0558,
+        "std": 0.4604,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 17.0,
+        "num_nonzero": 480,
+        "num_zero": 15876
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.109,
+          "std": 0.6389,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 17.0,
+          "num_nonzero": 171,
+          "num_zero": 2555
+        },
+        "1": {
+          "mean": 0.1691,
+          "std": 0.8403,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 16.0,
+          "num_nonzero": 214,
+          "num_zero": 2512
+        },
+        "2": {
+          "mean": 0.0147,
+          "std": 0.2058,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 6.0,
+          "num_nonzero": 22,
+          "num_zero": 2704
+        },
+        "3": {
+          "mean": 0.0231,
+          "std": 0.2449,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 6.0,
+          "num_nonzero": 35,
+          "num_zero": 2691
+        },
+        "4": {
+          "mean": 0.007,
+          "std": 0.0993,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 2.0,
+          "num_nonzero": 15,
+          "num_zero": 2711
+        },
+        "5": {
+          "mean": 0.0117,
+          "std": 0.1504,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 5.0,
+          "num_nonzero": 23,
+          "num_zero": 2703
+        }
+      }
+    },
+    "dangerous_call_without_check_count": {
+      "overall": {
+        "mean": 0.0431,
+        "std": 0.4048,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 17.0,
+        "num_nonzero": 382,
+        "num_zero": 15974
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.0902,
+          "std": 0.5815,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 17.0,
+          "num_nonzero": 147,
+          "num_zero": 2579
+        },
+        "1": {
+          "mean": 0.1313,
+          "std": 0.7401,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 16.0,
+          "num_nonzero": 171,
+          "num_zero": 2555
+        },
+        "2": {
+          "mean": 0.0084,
+          "std": 0.1282,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 3.0,
+          "num_nonzero": 14,
+          "num_zero": 2712
+        },
+        "3": {
+          "mean": 0.0158,
+          "std": 0.2066,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 6.0,
+          "num_nonzero": 24,
+          "num_zero": 2702
+        },
+        "4": {
+          "mean": 0.0051,
+          "std": 0.0855,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 2.0,
+          "num_nonzero": 11,
+          "num_zero": 2715
+        },
+        "5": {
+          "mean": 0.0077,
+          "std": 0.1283,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 5.0,
+          "num_nonzero": 15,
+          "num_zero": 2711
+        }
+      }
+    },
+    "dangerous_call_without_check_ratio": {
+      "overall": {
+        "mean": 0.0221,
+        "std": 0.1449,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 1.0,
+        "num_nonzero": 382,
+        "num_zero": 15974
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.0522,
+          "std": 0.2206,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 147,
+          "num_zero": 2579
+        },
+        "1": {
+          "mean": 0.0583,
+          "std": 0.23,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 171,
+          "num_zero": 2555
+        },
+        "2": {
+          "mean": 0.0046,
+          "std": 0.0654,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 14,
+          "num_zero": 2712
+        },
+        "3": {
+          "mean": 0.0081,
+          "std": 0.0884,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 24,
+          "num_zero": 2702
+        },
+        "4": {
+          "mean": 0.0039,
+          "std": 0.0612,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 11,
+          "num_zero": 2715
+        },
+        "5": {
+          "mean": 0.0053,
+          "std": 0.0721,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 15,
+          "num_zero": 2711
+        }
+      }
+    },
+    "pointer_deref_count": {
+      "overall": {
+        "mean": 2.225,
+        "std": 7.7345,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 1.0,
+        "max": 380.0,
+        "num_nonzero": 4942,
+        "num_zero": 11414
+      },
+      "per_slice": {
+        "0": {
+          "mean": 4.6893,
+          "std": 9.8138,
+          "min": 0.0,
+          "p25": 1.0,
+          "median": 2.0,
+          "p75": 5.0,
+          "max": 355.0,
+          "num_nonzero": 2191,
+          "num_zero": 535
+        },
+        "1": {
+          "mean": 5.7704,
+          "std": 13.0083,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 2.0,
+          "p75": 6.0,
+          "max": 380.0,
+          "num_nonzero": 1731,
+          "num_zero": 995
+        },
+        "2": {
+          "mean": 0.7729,
+          "std": 3.1632,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 54.0,
+          "num_nonzero": 356,
+          "num_zero": 2370
+        },
+        "3": {
+          "mean": 1.0437,
+          "std": 5.327,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 127.0,
+          "num_nonzero": 332,
+          "num_zero": 2394
+        },
+        "4": {
+          "mean": 0.529,
+          "std": 2.9398,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 52.0,
+          "num_nonzero": 182,
+          "num_zero": 2544
+        },
+        "5": {
+          "mean": 0.5448,
+          "std": 4.3056,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 106.0,
+          "num_nonzero": 150,
+          "num_zero": 2576
+        }
+      }
+    },
+    "pointer_deref_without_null_check_count": {
+      "overall": {
+        "mean": 2.1915,
+        "std": 7.7019,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 1.0,
+        "max": 380.0,
+        "num_nonzero": 4870,
+        "num_zero": 11486
+      },
+      "per_slice": {
+        "0": {
+          "mean": 4.6005,
+          "std": 9.7743,
+          "min": 0.0,
+          "p25": 1.0,
+          "median": 2.0,
+          "p75": 5.0,
+          "max": 355.0,
+          "num_nonzero": 2161,
+          "num_zero": 565
+        },
+        "1": {
+          "mean": 5.6893,
+          "std": 12.9775,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 2.0,
+          "p75": 6.0,
+          "max": 380.0,
+          "num_nonzero": 1705,
+          "num_zero": 1021
+        },
+        "2": {
+          "mean": 0.763,
+          "std": 3.1416,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 54.0,
+          "num_nonzero": 349,
+          "num_zero": 2377
+        },
+        "3": {
+          "mean": 1.0319,
+          "std": 5.306,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 127.0,
+          "num_nonzero": 328,
+          "num_zero": 2398
+        },
+        "4": {
+          "mean": 0.526,
+          "std": 2.9371,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 52.0,
+          "num_nonzero": 179,
+          "num_zero": 2547
+        },
+        "5": {
+          "mean": 0.5382,
+          "std": 4.2876,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 106.0,
+          "num_nonzero": 148,
+          "num_zero": 2578
+        }
+      }
+    },
+    "pointer_deref_without_null_check_ratio": {
+      "overall": {
+        "mean": 0.2946,
+        "std": 0.4538,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 1.0,
+        "max": 1.0,
+        "num_nonzero": 4870,
+        "num_zero": 11486
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.7831,
+          "std": 0.4053,
+          "min": 0.0,
+          "p25": 1.0,
+          "median": 1.0,
+          "p75": 1.0,
+          "max": 1.0,
+          "num_nonzero": 2161,
+          "num_zero": 565
+        },
+        "1": {
+          "mean": 0.6191,
+          "std": 0.4816,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 1.0,
+          "p75": 1.0,
+          "max": 1.0,
+          "num_nonzero": 1705,
+          "num_zero": 1021
+        },
+        "2": {
+          "mean": 0.127,
+          "std": 0.3322,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 349,
+          "num_zero": 2377
+        },
+        "3": {
+          "mean": 0.1193,
+          "std": 0.3231,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 328,
+          "num_zero": 2398
+        },
+        "4": {
+          "mean": 0.0653,
+          "std": 0.2464,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 179,
+          "num_zero": 2547
+        },
+        "5": {
+          "mean": 0.0537,
+          "std": 0.2246,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 148,
+          "num_zero": 2578
+        }
+      }
+    },
+    "array_access_count": {
+      "overall": {
+        "mean": 0.7229,
+        "std": 5.1838,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 378.0,
+        "num_nonzero": 1897,
+        "num_zero": 14459
+      },
+      "per_slice": {
+        "0": {
+          "mean": 1.285,
+          "std": 6.9714,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 1.0,
+          "max": 302.0,
+          "num_nonzero": 717,
+          "num_zero": 2009
+        },
+        "1": {
+          "mean": 2.1412,
+          "std": 9.5864,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 1.0,
+          "max": 378.0,
+          "num_nonzero": 768,
+          "num_zero": 1958
+        },
+        "2": {
+          "mean": 0.2128,
+          "std": 1.568,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 29.0,
+          "num_nonzero": 125,
+          "num_zero": 2601
+        },
+        "3": {
+          "mean": 0.3283,
+          "std": 2.4574,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 63.0,
+          "num_nonzero": 135,
+          "num_zero": 2591
+        },
+        "4": {
+          "mean": 0.1658,
+          "std": 1.6491,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 49.0,
+          "num_nonzero": 82,
+          "num_zero": 2644
+        },
+        "5": {
+          "mean": 0.2043,
+          "std": 2.4882,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 100.0,
+          "num_nonzero": 70,
+          "num_zero": 2656
+        }
+      }
+    },
+    "array_access_without_bounds_check_count": {
+      "overall": {
+        "mean": 0.1967,
+        "std": 2.1403,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 205.0,
+        "num_nonzero": 907,
+        "num_zero": 15449
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.3734,
+          "std": 4.1275,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 205.0,
+          "num_nonzero": 318,
+          "num_zero": 2408
+        },
+        "1": {
+          "mean": 0.5891,
+          "std": 2.9866,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 108.0,
+          "num_nonzero": 388,
+          "num_zero": 2338
+        },
+        "2": {
+          "mean": 0.0539,
+          "std": 0.5455,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 15.0,
+          "num_nonzero": 59,
+          "num_zero": 2667
+        },
+        "3": {
+          "mean": 0.0792,
+          "std": 0.6361,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 13.0,
+          "num_nonzero": 68,
+          "num_zero": 2658
+        },
+        "4": {
+          "mean": 0.0374,
+          "std": 0.4669,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 15.0,
+          "num_nonzero": 39,
+          "num_zero": 2687
+        },
+        "5": {
+          "mean": 0.047,
+          "std": 0.5853,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 18.0,
+          "num_nonzero": 35,
+          "num_zero": 2691
+        }
+      }
+    },
+    "array_access_without_bounds_check_ratio": {
+      "overall": {
+        "mean": 0.0414,
+        "std": 0.1868,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 1.0,
+        "num_nonzero": 907,
+        "num_zero": 15449
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.0912,
+          "std": 0.2725,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 318,
+          "num_zero": 2408
+        },
+        "1": {
+          "mean": 0.104,
+          "std": 0.2832,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 388,
+          "num_zero": 2338
+        },
+        "2": {
+          "mean": 0.0154,
+          "std": 0.1149,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 59,
+          "num_zero": 2667
+        },
+        "3": {
+          "mean": 0.0183,
+          "std": 0.1245,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 68,
+          "num_zero": 2658
+        },
+        "4": {
+          "mean": 0.0104,
+          "std": 0.0952,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 39,
+          "num_zero": 2687
+        },
+        "5": {
+          "mean": 0.0089,
+          "std": 0.087,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 35,
+          "num_zero": 2691
+        }
+      }
+    },
+    "malloc_count": {
+      "overall": {
+        "mean": 0.0007,
+        "std": 0.0271,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 1.0,
+        "num_nonzero": 12,
+        "num_zero": 16344
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.0015,
+          "std": 0.0383,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 4,
+          "num_zero": 2722
+        },
+        "1": {
+          "mean": 0.0011,
+          "std": 0.0332,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 3,
+          "num_zero": 2723
+        },
+        "2": {
+          "mean": 0.0,
+          "std": 0.0,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.0,
+          "num_nonzero": 0,
+          "num_zero": 2726
+        },
+        "3": {
+          "mean": 0.0007,
+          "std": 0.0271,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 2,
+          "num_zero": 2724
+        },
+        "4": {
+          "mean": 0.0004,
+          "std": 0.0191,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 1,
+          "num_zero": 2725
+        },
+        "5": {
+          "mean": 0.0007,
+          "std": 0.0271,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 2,
+          "num_zero": 2724
+        }
+      }
+    },
+    "malloc_without_free_count": {
+      "overall": {
+        "mean": 0.0006,
+        "std": 0.0235,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 1.0,
+        "num_nonzero": 9,
+        "num_zero": 16347
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.0011,
+          "std": 0.0332,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 3,
+          "num_zero": 2723
+        },
+        "1": {
+          "mean": 0.0011,
+          "std": 0.0332,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 3,
+          "num_zero": 2723
+        },
+        "2": {
+          "mean": 0.0,
+          "std": 0.0,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.0,
+          "num_nonzero": 0,
+          "num_zero": 2726
+        },
+        "3": {
+          "mean": 0.0004,
+          "std": 0.0191,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 1,
+          "num_zero": 2725
+        },
+        "4": {
+          "mean": 0.0004,
+          "std": 0.0191,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 1,
+          "num_zero": 2725
+        },
+        "5": {
+          "mean": 0.0004,
+          "std": 0.0191,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 1,
+          "num_zero": 2725
+        }
+      }
+    },
+    "malloc_without_free_ratio": {
+      "overall": {
+        "mean": 0.0006,
+        "std": 0.0235,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 1.0,
+        "num_nonzero": 9,
+        "num_zero": 16347
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.0011,
+          "std": 0.0332,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 3,
+          "num_zero": 2723
+        },
+        "1": {
+          "mean": 0.0011,
+          "std": 0.0332,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 3,
+          "num_zero": 2723
+        },
+        "2": {
+          "mean": 0.0,
+          "std": 0.0,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.0,
+          "num_nonzero": 0,
+          "num_zero": 2726
+        },
+        "3": {
+          "mean": 0.0004,
+          "std": 0.0191,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 1,
+          "num_zero": 2725
+        },
+        "4": {
+          "mean": 0.0004,
+          "std": 0.0191,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 1,
+          "num_zero": 2725
+        },
+        "5": {
+          "mean": 0.0004,
+          "std": 0.0191,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 1,
+          "num_zero": 2725
+        }
+      }
+    },
+    "free_count": {
+      "overall": {
+        "mean": 0.0014,
+        "std": 0.0421,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 2.0,
+        "num_nonzero": 20,
+        "num_zero": 16336
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.0029,
+          "std": 0.0541,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 8,
+          "num_zero": 2718
+        },
+        "1": {
+          "mean": 0.004,
+          "std": 0.0789,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 2.0,
+          "num_nonzero": 8,
+          "num_zero": 2718
+        },
+        "2": {
+          "mean": 0.0,
+          "std": 0.0,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.0,
+          "num_nonzero": 0,
+          "num_zero": 2726
+        },
+        "3": {
+          "mean": 0.0007,
+          "std": 0.0271,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 2,
+          "num_zero": 2724
+        },
+        "4": {
+          "mean": 0.0,
+          "std": 0.0,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.0,
+          "num_nonzero": 0,
+          "num_zero": 2726
+        },
+        "5": {
+          "mean": 0.0007,
+          "std": 0.0271,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 2,
+          "num_zero": 2724
+        }
+      }
+    },
+    "free_without_null_check_count": {
+      "overall": {
+        "mean": 0.001,
+        "std": 0.0367,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 2.0,
+        "num_nonzero": 13,
+        "num_zero": 16343
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.0015,
+          "std": 0.0383,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 4,
+          "num_zero": 2722
+        },
+        "1": {
+          "mean": 0.0037,
+          "std": 0.0765,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 2.0,
+          "num_nonzero": 7,
+          "num_zero": 2719
+        },
+        "2": {
+          "mean": 0.0,
+          "std": 0.0,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.0,
+          "num_nonzero": 0,
+          "num_zero": 2726
+        },
+        "3": {
+          "mean": 0.0004,
+          "std": 0.0191,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 1,
+          "num_zero": 2725
+        },
+        "4": {
+          "mean": 0.0,
+          "std": 0.0,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.0,
+          "num_nonzero": 0,
+          "num_zero": 2726
+        },
+        "5": {
+          "mean": 0.0004,
+          "std": 0.0191,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 1,
+          "num_zero": 2725
+        }
+      }
+    },
+    "free_without_null_check_ratio": {
+      "overall": {
+        "mean": 0.0008,
+        "std": 0.0282,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 1.0,
+        "num_nonzero": 13,
+        "num_zero": 16343
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.0015,
+          "std": 0.0383,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 4,
+          "num_zero": 2722
+        },
+        "1": {
+          "mean": 0.0026,
+          "std": 0.0506,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 7,
+          "num_zero": 2719
+        },
+        "2": {
+          "mean": 0.0,
+          "std": 0.0,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.0,
+          "num_nonzero": 0,
+          "num_zero": 2726
+        },
+        "3": {
+          "mean": 0.0004,
+          "std": 0.0191,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 1,
+          "num_zero": 2725
+        },
+        "4": {
+          "mean": 0.0,
+          "std": 0.0,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.0,
+          "num_nonzero": 0,
+          "num_zero": 2726
+        },
+        "5": {
+          "mean": 0.0004,
+          "std": 0.0191,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 1,
+          "num_zero": 2725
+        }
+      }
+    },
+    "unchecked_return_value_count": {
+      "overall": {
+        "mean": 0.0015,
+        "std": 0.0494,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 4.0,
+        "num_nonzero": 19,
+        "num_zero": 16337
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.004,
+          "std": 0.0741,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 2.0,
+          "num_nonzero": 9,
+          "num_zero": 2717
+        },
+        "1": {
+          "mean": 0.0029,
+          "std": 0.0856,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 4.0,
+          "num_nonzero": 5,
+          "num_zero": 2721
+        },
+        "2": {
+          "mean": 0.0,
+          "std": 0.0,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.0,
+          "num_nonzero": 0,
+          "num_zero": 2726
+        },
+        "3": {
+          "mean": 0.0011,
+          "std": 0.0332,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 3,
+          "num_zero": 2723
+        },
+        "4": {
+          "mean": 0.0,
+          "std": 0.0,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.0,
+          "num_nonzero": 0,
+          "num_zero": 2726
+        },
+        "5": {
+          "mean": 0.0007,
+          "std": 0.0271,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 2,
+          "num_zero": 2724
+        }
+      }
+    },
+    "unchecked_return_value_ratio": {
+      "overall": {
+        "mean": 0.0012,
+        "std": 0.0341,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 1.0,
+        "num_nonzero": 19,
+        "num_zero": 16337
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.0033,
+          "std": 0.0574,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 9,
+          "num_zero": 2717
+        },
+        "1": {
+          "mean": 0.0018,
+          "std": 0.0428,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 5,
+          "num_zero": 2721
+        },
+        "2": {
+          "mean": 0.0,
+          "std": 0.0,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.0,
+          "num_nonzero": 0,
+          "num_zero": 2726
+        },
+        "3": {
+          "mean": 0.0011,
+          "std": 0.0332,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 3,
+          "num_zero": 2723
+        },
+        "4": {
+          "mean": 0.0,
+          "std": 0.0,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.0,
+          "num_nonzero": 0,
+          "num_zero": 2726
+        },
+        "5": {
+          "mean": 0.0007,
+          "std": 0.0271,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 2,
+          "num_zero": 2724
+        }
+      }
+    },
+    "null_check_count": {
+      "overall": {
+        "mean": 0.088,
+        "std": 0.4007,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 18.0,
+        "num_nonzero": 1084,
+        "num_zero": 15272
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.2073,
+          "std": 0.6404,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 18.0,
+          "num_nonzero": 422,
+          "num_zero": 2304
+        },
+        "1": {
+          "mean": 0.2102,
+          "std": 0.5917,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 7.0,
+          "num_nonzero": 415,
+          "num_zero": 2311
+        },
+        "2": {
+          "mean": 0.0367,
+          "std": 0.2379,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 4.0,
+          "num_nonzero": 79,
+          "num_zero": 2647
+        },
+        "3": {
+          "mean": 0.0352,
+          "std": 0.2271,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 4.0,
+          "num_nonzero": 78,
+          "num_zero": 2648
+        },
+        "4": {
+          "mean": 0.0187,
+          "std": 0.1434,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 2.0,
+          "num_nonzero": 48,
+          "num_zero": 2678
+        },
+        "5": {
+          "mean": 0.0198,
+          "std": 0.1744,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 3.0,
+          "num_nonzero": 42,
+          "num_zero": 2684
+        }
+      }
+    },
+    "bounds_check_count": {
+      "overall": {
+        "mean": 0.1829,
+        "std": 0.6096,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 14.0,
+        "num_nonzero": 1924,
+        "num_zero": 14432
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.416,
+          "std": 0.9162,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 1.0,
+          "max": 14.0,
+          "num_nonzero": 714,
+          "num_zero": 2012
+        },
+        "1": {
+          "mean": 0.4373,
+          "std": 0.8614,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 1.0,
+          "max": 7.0,
+          "num_nonzero": 764,
+          "num_zero": 1962
+        },
+        "2": {
+          "mean": 0.0734,
+          "std": 0.3691,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 5.0,
+          "num_nonzero": 138,
+          "num_zero": 2588
+        },
+        "3": {
+          "mean": 0.0811,
+          "std": 0.3883,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 4.0,
+          "num_nonzero": 146,
+          "num_zero": 2580
+        },
+        "4": {
+          "mean": 0.0517,
+          "std": 0.318,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 5.0,
+          "num_nonzero": 94,
+          "num_zero": 2632
+        },
+        "5": {
+          "mean": 0.0382,
+          "std": 0.2841,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 6.0,
+          "num_nonzero": 68,
+          "num_zero": 2658
+        }
+      }
+    },
+    "defense_ratio": {
+      "overall": {
+        "mean": 0.0702,
+        "std": 0.2714,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 6.0,
+        "num_nonzero": 2569,
+        "num_zero": 13787
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.1692,
+          "std": 0.3746,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.1429,
+          "max": 4.0,
+          "num_nonzero": 982,
+          "num_zero": 1744
+        },
+        "1": {
+          "mean": 0.16,
+          "std": 0.4304,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.1111,
+          "max": 6.0,
+          "num_nonzero": 995,
+          "num_zero": 1731
+        },
+        "2": {
+          "mean": 0.0303,
+          "std": 0.1661,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 3.0,
+          "num_nonzero": 189,
+          "num_zero": 2537
+        },
+        "3": {
+          "mean": 0.0312,
+          "std": 0.1812,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 3.0,
+          "num_nonzero": 192,
+          "num_zero": 2534
+        },
+        "4": {
+          "mean": 0.0168,
+          "std": 0.1229,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 2.5,
+          "num_nonzero": 119,
+          "num_zero": 2607
+        },
+        "5": {
+          "mean": 0.0137,
+          "std": 0.1185,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 3.0,
+          "num_nonzero": 92,
+          "num_zero": 2634
+        }
+      }
+    },
+    "dangerous_call_density": {
+      "overall": {
+        "mean": 0.0035,
+        "std": 0.0268,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 0.9333,
+        "num_nonzero": 480,
+        "num_zero": 15876
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.0092,
+          "std": 0.0472,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.9333,
+          "num_nonzero": 171,
+          "num_zero": 2555
+        },
+        "1": {
+          "mean": 0.008,
+          "std": 0.037,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.7619,
+          "num_nonzero": 214,
+          "num_zero": 2512
+        },
+        "2": {
+          "mean": 0.001,
+          "std": 0.0131,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.3125,
+          "num_nonzero": 22,
+          "num_zero": 2704
+        },
+        "3": {
+          "mean": 0.0013,
+          "std": 0.0161,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.5,
+          "num_nonzero": 35,
+          "num_zero": 2691
+        },
+        "4": {
+          "mean": 0.0007,
+          "std": 0.0106,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.2857,
+          "num_nonzero": 15,
+          "num_zero": 2711
+        },
+        "5": {
+          "mean": 0.0007,
+          "std": 0.0088,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.25,
+          "num_nonzero": 23,
+          "num_zero": 2703
+        }
+      }
+    },
+    "pointer_deref_density": {
+      "overall": {
+        "mean": 0.2006,
+        "std": 0.4152,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.2,
+        "max": 5.0,
+        "num_nonzero": 4942,
+        "num_zero": 11414
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.6424,
+          "std": 0.6063,
+          "min": 0.0,
+          "p25": 0.1312,
+          "median": 0.5,
+          "p75": 1.0,
+          "max": 5.0,
+          "num_nonzero": 2191,
+          "num_zero": 535
+        },
+        "1": {
+          "mean": 0.3151,
+          "std": 0.3813,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.2,
+          "p75": 0.5133,
+          "max": 4.0,
+          "num_nonzero": 1731,
+          "num_zero": 995
+        },
+        "2": {
+          "mean": 0.1055,
+          "std": 0.3335,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 3.0,
+          "num_nonzero": 356,
+          "num_zero": 2370
+        },
+        "3": {
+          "mean": 0.0627,
+          "std": 0.2195,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 3.0,
+          "num_nonzero": 332,
+          "num_zero": 2394
+        },
+        "4": {
+          "mean": 0.0519,
+          "std": 0.2338,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 2.8,
+          "num_nonzero": 182,
+          "num_zero": 2544
+        },
+        "5": {
+          "mean": 0.0263,
+          "std": 0.1359,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 2.0,
+          "num_nonzero": 150,
+          "num_zero": 2576
+        }
+      }
+    },
+    "array_access_density": {
+      "overall": {
+        "mean": 0.0421,
+        "std": 0.1708,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 4.0,
+        "num_nonzero": 1897,
+        "num_zero": 14459
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.1096,
+          "std": 0.2807,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0625,
+          "max": 4.0,
+          "num_nonzero": 717,
+          "num_zero": 2009
+        },
+        "1": {
+          "mean": 0.0861,
+          "std": 0.2124,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0556,
+          "max": 2.7794,
+          "num_nonzero": 768,
+          "num_zero": 1958
+        },
+        "2": {
+          "mean": 0.0203,
+          "std": 0.1307,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 2.3333,
+          "num_nonzero": 125,
+          "num_zero": 2601
+        },
+        "3": {
+          "mean": 0.0158,
+          "std": 0.0989,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 2.0,
+          "num_nonzero": 135,
+          "num_zero": 2591
+        },
+        "4": {
+          "mean": 0.0125,
+          "std": 0.0992,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.8889,
+          "num_nonzero": 82,
+          "num_zero": 2644
+        },
+        "5": {
+          "mean": 0.0083,
+          "std": 0.0693,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.3333,
+          "num_nonzero": 70,
+          "num_zero": 2656
+        }
+      }
+    },
+    "null_check_density": {
+      "overall": {
+        "mean": 0.008,
+        "std": 0.0425,
+        "min": 0.0,
+        "p25": 0.0,
+        "median": 0.0,
+        "p75": 0.0,
+        "max": 1.0,
+        "num_nonzero": 1084,
+        "num_zero": 15272
+      },
+      "per_slice": {
+        "0": {
+          "mean": 0.0236,
+          "std": 0.078,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 422,
+          "num_zero": 2304
+        },
+        "1": {
+          "mean": 0.0133,
+          "std": 0.0443,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.6667,
+          "num_nonzero": 415,
+          "num_zero": 2311
+        },
+        "2": {
+          "mean": 0.0044,
+          "std": 0.0346,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 1.0,
+          "num_nonzero": 79,
+          "num_zero": 2647
+        },
+        "3": {
+          "mean": 0.0029,
+          "std": 0.0216,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.3333,
+          "num_nonzero": 78,
+          "num_zero": 2648
+        },
+        "4": {
+          "mean": 0.0025,
+          "std": 0.0224,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.5,
+          "num_nonzero": 48,
+          "num_zero": 2678
+        },
+        "5": {
+          "mean": 0.0014,
+          "std": 0.0148,
+          "min": 0.0,
+          "p25": 0.0,
+          "median": 0.0,
+          "p75": 0.0,
+          "max": 0.3333,
+          "num_nonzero": 42,
+          "num_zero": 2684
+        }
+      }
+    }
+  }
+}

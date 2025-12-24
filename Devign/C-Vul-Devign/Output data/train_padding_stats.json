@@ -1,0 +1,289 @@
+{
+  "split": "train",
+  "sequence_lengths": {
+    "min": 5,
+    "max": 512,
+    "mean": 68.43,
+    "median": 41,
+    "histogram": {
+      "bins": [
+        0,
+        64,
+        128,
+        192,
+        256,
+        320,
+        384,
+        448,
+        512
+      ],
+      "counts": [
+        14564,
+        4249,
+        1495,
+        627,
+        305,
+        208,
+        109,
+        260
+      ]
+    }
+  },
+  "slice_lengths": {
+    "real_slices_only": {
+      "count": 48078,
+      "min": 3,
+      "max": 256,
+      "mean": 81.17
+    }
+  },
+  "slice_count_distribution": {
+    "1": 5379,
+    "2": 13008,
+    "3": 247,
+    "4": 1410,
+    "5": 336,
+    "6": 1437
+  },
+  "padding_summary": {
+    "total_sequence_slots": 11170304,
+    "total_non_pad_tokens": 1493011,
+    "total_pad_tokens": 9677293,
+    "sequence_pad_fraction": 0.8663,
+    "total_unk_tokens": 1,
+    "unk_ratio": 1e-06
+  },
+  "mask_consistency": {
+    "id_zero_but_mask_one": 0,
+    "id_nonzero_but_mask_zero": 0,
+    "is_consistent": true
+  },
+  "truncation": {
+    "num_truncated_sequences": 206,
+    "num_truncated_slices": 3700
+  },
+  "token_frequency_top20": [
+    {
+      "rank": 1,
+      "token": "(",
+      "count": 114112
+    },
+    {
+      "rank": 2,
+      "token": ")",
+      "count": 112252
+    },
+    {
+      "rank": 3,
+      "token": ";",
+      "count": 107836
+    },
+    {
+      "rank": 4,
+      "token": ",",
+      "count": 81624
+    },
+    {
+      "rank": 5,
+      "token": "->",
+      "count": 74912
+    },
+    {
+      "rank": 6,
+      "token": "NUM",
+      "count": 66879
+    },
+    {
+      "rank": 7,
+      "token": "=",
+      "count": 60288
+    },
+    {
+      "rank": 8,
+      "token": "VAR_0",
+      "count": 52483
+    },
+    {
+      "rank": 9,
+      "token": "VAR_1",
+      "count": 47712
+    },
+    {
+      "rank": 10,
+      "token": "VAR_2",
+      "count": 43135
+    },
+    {
+      "rank": 11,
+      "token": "VAR_3",
+      "count": 37807
+    },
+    {
+      "rank": 12,
+      "token": "VAR_4",
+      "count": 35588
+    },
+    {
+      "rank": 13,
+      "token": "*",
+      "count": 32739
+    },
+    {
+      "rank": 14,
+      "token": "VAR_5",
+      "count": 31683
+    },
+    {
+      "rank": 15,
+      "token": "{",
+      "count": 28757
+    },
+    {
+      "rank": 16,
+      "token": "VAR_6",
+      "count": 27461
+    },
+    {
+      "rank": 17,
+      "token": "[",
+      "count": 27017
+    },
+    {
+      "rank": 18,
+      "token": "]",
+      "count": 27000
+    },
+    {
+      "rank": 19,
+      "token": "if",
+      "count": 25917
+    },
+    {
+      "rank": 20,
+      "token": "VAR_7",
+      "count": 24209
+    }
+  ],
+  "id_frequency_top20": [
+    {
+      "rank": 1,
+      "id": 4,
+      "token": "(",
+      "count": 114112
+    },
+    {
+      "rank": 2,
+      "id": 6,
+      "token": ")",
+      "count": 112252
+    },
+    {
+      "rank": 3,
+      "id": 5,
+      "token": ";",
+      "count": 107836
+    },
+    {
+      "rank": 4,
+      "id": 7,
+      "token": ",",
+      "count": 81624
+    },
+    {
+      "rank": 5,
+      "id": 9,
+      "token": "->",
+      "count": 74912
+    },
+    {
+      "rank": 6,
+      "id": 8,
+      "token": "NUM",
+      "count": 66879
+    },
+    {
+      "rank": 7,
+      "id": 10,
+      "token": "=",
+      "count": 60288
+    },
+    {
+      "rank": 8,
+      "id": 11,
+      "token": "VAR_0",
+      "count": 52483
+    },
+    {
+      "rank": 9,
+      "id": 12,
+      "token": "VAR_1",
+      "count": 47712
+    },
+    {
+      "rank": 10,
+      "id": 13,
+      "token": "VAR_2",
+      "count": 43135
+    },
+    {
+      "rank": 11,
+      "id": 16,
+      "token": "VAR_3",
+      "count": 37807
+    },
+    {
+      "rank": 12,
+      "id": 17,
+      "token": "VAR_4",
+      "count": 35588
+    },
+    {
+      "rank": 13,
+      "id": 20,
+      "token": "*",
+      "count": 32739
+    },
+    {
+      "rank": 14,
+      "id": 18,
+      "token": "VAR_5",
+      "count": 31683
+    },
+    {
+      "rank": 15,
+      "id": 19,
+      "token": "{",
+      "count": 28757
+    },
+    {
+      "rank": 16,
+      "id": 21,
+      "token": "VAR_6",
+      "count": 27461
+    },
+    {
+      "rank": 17,
+      "id": 14,
+      "token": "[",
+      "count": 27017
+    },
+    {
+      "rank": 18,
+      "id": 15,
+      "token": "]",
+      "count": 27000
+    },
+    {
+      "rank": 19,
+      "id": 23,
+      "token": "if",
+      "count": 25917
+    },
+    {
+      "rank": 20,
+      "id": 24,
+      "token": "VAR_7",
+      "count": 24209
+    }
+  ]
+}

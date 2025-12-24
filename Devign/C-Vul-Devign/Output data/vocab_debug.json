@@ -1,0 +1,1031 @@
+{
+  "version": "v2",
+  "vocab_size": 238,
+  "prune_stats": {
+    "original_vocab_size": 1194,
+    "pruned_vocab_size": 238,
+    "removed_tokens": 956
+  },
+  "special_tokens": {
+    "pad": {
+      "id": 0,
+      "token": "<PAD>"
+    },
+    "unk": {
+      "id": 1,
+      "token": "<UNK>"
+    },
+    "bos": {
+      "id": 2,
+      "token": "<BOS>"
+    },
+    "eos": {
+      "id": 3,
+      "token": "<EOS>"
+    }
+  },
+  "most_frequent_tokens": [
+    {
+      "token": "(",
+      "id": 4,
+      "freq": 364918
+    },
+    {
+      "token": ";",
+      "id": 5,
+      "freq": 364219
+    },
+    {
+      "token": ")",
+      "id": 6,
+      "freq": 363229
+    },
+    {
+      "token": ",",
+      "id": 7,
+      "freq": 284924
+    },
+    {
+      "token": "NUM",
+      "id": 8,
+      "freq": 247416
+    },
+    {
+      "token": "->",
+      "id": 9,
+      "freq": 228427
+    },
+    {
+      "token": "=",
+      "id": 10,
+      "freq": 186901
+    },
+    {
+      "token": "VAR_0",
+      "id": 11,
+      "freq": 148753
+    },
+    {
+      "token": "VAR_1",
+      "id": 12,
+      "freq": 134917
+    },
+    {
+      "token": "VAR_2",
+      "id": 13,
+      "freq": 116133
+    },
+    {
+      "token": "[",
+      "id": 14,
+      "freq": 106520
+    },
+    {
+      "token": "]",
+      "id": 15,
+      "freq": 106519
+    },
+    {
+      "token": "VAR_3",
+      "id": 16,
+      "freq": 104490
+    },
+    {
+      "token": "VAR_4",
+      "id": 17,
+      "freq": 95969
+    },
+    {
+      "token": "VAR_5",
+      "id": 18,
+      "freq": 89125
+    },
+    {
+      "token": "{",
+      "id": 19,
+      "freq": 88073
+    },
+    {
+      "token": "*",
+      "id": 20,
+      "freq": 85976
+    },
+    {
+      "token": "VAR_6",
+      "id": 21,
+      "freq": 76878
+    },
+    {
+      "token": "}",
+      "id": 22,
+      "freq": 76798
+    },
+    {
+      "token": "if",
+      "id": 23,
+      "freq": 74183
+    },
+    {
+      "token": "VAR_7",
+      "id": 24,
+      "freq": 69209
+    },
+    {
+      "token": "STR",
+      "id": 25,
+      "freq": 65803
+    },
+    {
+      "token": "VAR_8",
+      "id": 26,
+      "freq": 61598
+    },
+    {
+      "token": "&",
+      "id": 27,
+      "freq": 58326
+    },
+    {
+      "token": "VAR_9",
+      "id": 28,
+      "freq": 56235
+    },
+    {
+      "token": ".",
+      "id": 29,
+      "freq": 50143
+    },
+    {
+      "token": "VAR_10",
+      "id": 30,
+      "freq": 49912
+    },
+    {
+      "token": "VAR_11",
+      "id": 31,
+      "freq": 44938
+    },
+    {
+      "token": "+",
+      "id": 32,
+      "freq": 41796
+    },
+    {
+      "token": "VAR_12",
+      "id": 33,
+      "freq": 40657
+    },
+    {
+      "token": "VAR_13",
+      "id": 34,
+      "freq": 36983
+    },
+    {
+      "token": "VAR_14",
+      "id": 35,
+      "freq": 32949
+    },
+    {
+      "token": "VAR_15",
+      "id": 36,
+      "freq": 30239
+    },
+    {
+      "token": "-",
+      "id": 37,
+      "freq": 28710
+    },
+    {
+      "token": "VAR_16",
+      "id": 38,
+      "freq": 27479
+    },
+    {
+      "token": "<",
+      "id": 39,
+      "freq": 24871
+    },
+    {
+      "token": "VAR_17",
+      "id": 40,
+      "freq": 24650
+    },
+    {
+      "token": "int",
+      "id": 41,
+      "freq": 23374
+    },
+    {
+      "token": "VAR_18",
+      "id": 42,
+      "freq": 22559
+    },
+    {
+      "token": "==",
+      "id": 43,
+      "freq": 22086
+    },
+    {
+      "token": "++",
+      "id": 44,
+      "freq": 20009
+    },
+    {
+      "token": "VAR_19",
+      "id": 45,
+      "freq": 19803
+    },
+    {
+      "token": "return",
+      "id": 46,
+      "freq": 19385
+    },
+    {
+      "token": "VAR_20",
+      "id": 47,
+      "freq": 17945
+    },
+    {
+      "token": ":",
+      "id": 48,
+      "freq": 17133
+    },
+    {
+      "token": "VAR_21",
+      "id": 49,
+      "freq": 16590
+    },
+    {
+      "token": "!",
+      "id": 50,
+      "freq": 15665
+    },
+    {
+      "token": "for",
+      "id": 51,
+      "freq": 15570
+    },
+    {
+      "token": "VAR_22",
+      "id": 52,
+      "freq": 15204
+    },
+    {
+      "token": "#",
+      "id": 53,
+      "freq": 14613
+    },
+    {
+      "token": "else",
+      "id": 54,
+      "freq": 14525
+    },
+    {
+      "token": "VAR_23",
+      "id": 55,
+      "freq": 13617
+    },
+    {
+      "token": "VAR_24",
+      "id": 56,
+      "freq": 12754
+    },
+    {
+      "token": "NULL",
+      "id": 57,
+      "freq": 12719
+    },
+    {
+      "token": "&&",
+      "id": 58,
+      "freq": 12648
+    },
+    {
+      "token": "VAR_25",
+      "id": 59,
+      "freq": 11424
+    },
+    {
+      "token": ">>",
+      "id": 60,
+      "freq": 11042
+    },
+    {
+      "token": "VAR_26",
+      "id": 61,
+      "freq": 10636
+    },
+    {
+      "token": "+=",
+      "id": 62,
+      "freq": 10420
+    },
+    {
+      "token": "VAR_27",
+      "id": 63,
+      "freq": 9744
+    },
+    {
+      "token": "<<",
+      "id": 64,
+      "freq": 9644
+    },
+    {
+      "token": "VAR_28",
+      "id": 65,
+      "freq": 9466
+    },
+    {
+      "token": "!=",
+      "id": 66,
+      "freq": 8661
+    },
+    {
+      "token": "VAR_29",
+      "id": 67,
+      "freq": 8466
+    },
+    {
+      "token": "sizeof",
+      "id": 68,
+      "freq": 7970
+    },
+    {
+      "token": "VAR_30",
+      "id": 69,
+      "freq": 7625
+    },
+    {
+      "token": "const",
+      "id": 70,
+      "freq": 7433
+    },
+    {
+      "token": "||",
+      "id": 71,
+      "freq": 7355
+    },
+    {
+      "token": "VAR_31",
+      "id": 72,
+      "freq": 7096
+    },
+    {
+      "token": ">",
+      "id": 73,
+      "freq": 6927
+    },
+    {
+      "token": "|",
+      "id": 74,
+      "freq": 6795
+    },
+    {
+      "token": "static",
+      "id": 75,
+      "freq": 6602
+    },
+    {
+      "token": "VAR_32",
+      "id": 76,
+      "freq": 6382
+    },
+    {
+      "token": "\\",
+      "id": 77,
+      "freq": 6364
+    },
+    {
+      "token": "break",
+      "id": 78,
+      "freq": 6306
+    },
+    {
+      "token": "case",
+      "id": 79,
+      "freq": 6285
+    },
+    {
+      "token": "VAR_33",
+      "id": 80,
+      "freq": 6230
+    },
+    {
+      "token": "void",
+      "id": 81,
+      "freq": 6158
+    },
+    {
+      "token": "VAR_34",
+      "id": 82,
+      "freq": 5752
+    },
+    {
+      "token": "/",
+      "id": 83,
+      "freq": 5268
+    },
+    {
+      "token": "VAR_35",
+      "id": 84,
+      "freq": 5155
+    },
+    {
+      "token": "VAR_36",
+      "id": 85,
+      "freq": 4780
+    },
+    {
+      "token": "%",
+      "id": 86,
+      "freq": 4772
+    },
+    {
+      "token": "VAR_38",
+      "id": 87,
+      "freq": 4616
+    },
+    {
+      "token": "char",
+      "id": 88,
+      "freq": 4559
+    },
+    {
+      "token": "VAR_37",
+      "id": 89,
+      "freq": 4323
+    },
+    {
+      "token": "?",
+      "id": 90,
+      "freq": 4259
+    },
+    {
+      "token": ">=",
+      "id": 91,
+      "freq": 4128
+    },
+    {
+      "token": "VAR_39",
+      "id": 92,
+      "freq": 3863
+    },
+    {
+      "token": "CHAR",
+      "id": 93,
+      "freq": 3488
+    },
+    {
+      "token": "VAR_40",
+      "id": 94,
+      "freq": 3482
+    },
+    {
+      "token": "goto",
+      "id": 95,
+      "freq": 3399
+    },
+    {
+      "token": "VAR_41",
+      "id": 96,
+      "freq": 3249
+    },
+    {
+      "token": "|=",
+      "id": 97,
+      "freq": 3118
+    },
+    {
+      "token": "while",
+      "id": 98,
+      "freq": 3099
+    },
+    {
+      "token": "VAR_42",
+      "id": 99,
+      "freq": 2867
+    },
+    {
+      "token": "VAR_43",
+      "id": 100,
+      "freq": 2862
+    },
+    {
+      "token": "unsigned",
+      "id": 101,
+      "freq": 2789
+    },
+    {
+      "token": "struct",
+      "id": 102,
+      "freq": 2642
+    },
+    {
+      "token": "~",
+      "id": 103,
+      "freq": 2482
+    }
+  ],
+  "least_frequent_tokens": [
+    {
+      "token": "VAR_67",
+      "id": 142,
+      "freq": 785
+    },
+    {
+      "token": "VAR_68",
+      "id": 143,
+      "freq": 749
+    },
+    {
+      "token": "VAR_70",
+      "id": 144,
+      "freq": 718
+    },
+    {
+      "token": "VAR_72",
+      "id": 145,
+      "freq": 711
+    },
+    {
+      "token": "continue",
+      "id": 146,
+      "freq": 704
+    },
+    {
+      "token": "strlen",
+      "id": 147,
+      "freq": 694
+    },
+    {
+      "token": "VAR_77",
+      "id": 148,
+      "freq": 685
+    },
+    {
+      "token": "double",
+      "id": 149,
+      "freq": 676
+    },
+    {
+      "token": "^",
+      "id": 150,
+      "freq": 672
+    },
+    {
+      "token": "VAR_71",
+      "id": 151,
+      "freq": 645
+    },
+    {
+      "token": "snprintf",
+      "id": 152,
+      "freq": 634
+    },
+    {
+      "token": "VAR_73",
+      "id": 153,
+      "freq": 632
+    },
+    {
+      "token": "VAR_78",
+      "id": 154,
+      "freq": 627
+    },
+    {
+      "token": "VAR_76",
+      "id": 155,
+      "freq": 524
+    },
+    {
+      "token": "VAR_74",
+      "id": 156,
+      "freq": 484
+    },
+    {
+      "token": "VAR_92",
+      "id": 157,
+      "freq": 482
+    },
+    {
+      "token": "*=",
+      "id": 158,
+      "freq": 481
+    },
+    {
+      "token": "VAR_79",
+      "id": 159,
+      "freq": 458
+    },
+    {
+      "token": "VAR_80",
+      "id": 160,
+      "freq": 458
+    },
+    {
+      "token": "VAR_111",
+      "id": 161,
+      "freq": 429
+    },
+    {
+      "token": "signed",
+      "id": 162,
+      "freq": 404
+    },
+    {
+      "token": "VAR_82",
+      "id": 163,
+      "freq": 402
+    },
+    {
+      "token": "VAR_83",
+      "id": 164,
+      "freq": 401
+    },
+    {
+      "token": "VAR_75",
+      "id": 165,
+      "freq": 394
+    },
+    {
+      "token": "VAR_81",
+      "id": 166,
+      "freq": 388
+    },
+    {
+      "token": "VAR_84",
+      "id": 167,
+      "freq": 379
+    },
+    {
+      "token": "close",
+      "id": 168,
+      "freq": 378
+    },
+    {
+      "token": "short",
+      "id": 169,
+      "freq": 352
+    },
+    {
+      "token": "VAR_85",
+      "id": 170,
+      "freq": 336
+    },
+    {
+      "token": "VAR_87",
+      "id": 171,
+      "freq": 335
+    },
+    {
+      "token": "VAR_91",
+      "id": 172,
+      "freq": 330
+    },
+    {
+      "token": "VAR_86",
+      "id": 173,
+      "freq": 329
+    },
+    {
+      "token": "VAR_90",
+      "id": 174,
+      "freq": 322
+    },
+    {
+      "token": "VAR_88",
+      "id": 175,
+      "freq": 294
+    },
+    {
+      "token": "VAR_89",
+      "id": 176,
+      "freq": 290
+    },
+    {
+      "token": "VAR_107",
+      "id": 177,
+      "freq": 289
+    },
+    {
+      "token": "VAR_110",
+      "id": 178,
+      "freq": 284
+    },
+    {
+      "token": "free",
+      "id": 179,
+      "freq": 260
+    },
+    {
+      "token": "VAR_116",
+      "id": 180,
+      "freq": 251
+    },
+    {
+      "token": "VAR_94",
+      "id": 181,
+      "freq": 246
+    },
+    {
+      "token": "VAR_109",
+      "id": 182,
+      "freq": 245
+    },
+    {
+      "token": "VAR_95",
+      "id": 183,
+      "freq": 243
+    },
+    {
+      "token": "VAR_103",
+      "id": 184,
+      "freq": 239
+    },
+    {
+      "token": "VAR_93",
+      "id": 185,
+      "freq": 231
+    },
+    {
+      "token": "VAR_106",
+      "id": 186,
+      "freq": 226
+    },
+    {
+      "token": "VAR_97",
+      "id": 187,
+      "freq": 218
+    },
+    {
+      "token": "strncmp",
+      "id": 188,
+      "freq": 216
+    },
+    {
+      "token": "VAR_102",
+      "id": 189,
+      "freq": 209
+    },
+    {
+      "token": "VAR_101",
+      "id": 190,
+      "freq": 203
+    },
+    {
+      "token": "VAR_100",
+      "id": 191,
+      "freq": 196
+    },
+    {
+      "token": "VAR_112",
+      "id": 192,
+      "freq": 194
+    },
+    {
+      "token": "memcmp",
+      "id": 193,
+      "freq": 192
+    },
+    {
+      "token": "VAR_98",
+      "id": 194,
+      "freq": 189
+    },
+    {
+      "token": "sscanf",
+      "id": 195,
+      "freq": 184
+    },
+    {
+      "token": "VAR_96",
+      "id": 196,
+      "freq": 183
+    },
+    {
+      "token": "VAR_99",
+      "id": 197,
+      "freq": 181
+    },
+    {
+      "token": "enum",
+      "id": 198,
+      "freq": 174
+    },
+    {
+      "token": "/=",
+      "id": 199,
+      "freq": 170
+    },
+    {
+      "token": "^=",
+      "id": 200,
+      "freq": 163
+    },
+    {
+      "token": "VAR_105",
+      "id": 201,
+      "freq": 156
+    },
+    {
+      "token": "write",
+      "id": 202,
+      "freq": 156
+    },
+    {
+      "token": "VAR_108",
+      "id": 203,
+      "freq": 155
+    },
+    {
+      "token": "VAR_118",
+      "id": 204,
+      "freq": 146
+    },
+    {
+      "token": "VAR_104",
+      "id": 205,
+      "freq": 138
+    },
+    {
+      "token": "strcpy",
+      "id": 206,
+      "freq": 124
+    },
+    {
+      "token": "VAR_114",
+      "id": 207,
+      "freq": 115
+    },
+    {
+      "token": "memmove",
+      "id": 208,
+      "freq": 115
+    },
+    {
+      "token": "read",
+      "id": 209,
+      "freq": 112
+    },
+    {
+      "token": "fclose",
+      "id": 210,
+      "freq": 109
+    },
+    {
+      "token": "fopen",
+      "id": 211,
+      "freq": 105
+    },
+    {
+      "token": "VAR_115",
+      "id": 212,
+      "freq": 102
+    },
+    {
+      "token": "open",
+      "id": 213,
+      "freq": 99
+    },
+    {
+      "token": "VAR_117",
+      "id": 214,
+      "freq": 96
+    },
+    {
+      "token": "VAR_113",
+      "id": 215,
+      "freq": 95
+    },
+    {
+      "token": "malloc",
+      "id": 216,
+      "freq": 84
+    },
+    {
+      "token": "sprintf",
+      "id": 217,
+      "freq": 80
+    },
+    {
+      "token": "strncpy",
+      "id": 218,
+      "freq": 74
+    },
+    {
+      "token": "%=",
+      "id": 219,
+      "freq": 54
+    },
+    {
+      "token": "fwrite",
+      "id": 220,
+      "freq": 44
+    },
+    {
+      "token": "puts",
+      "id": 221,
+      "freq": 42
+    },
+    {
+      "token": "fread",
+      "id": 222,
+      "freq": 32
+    },
+    {
+      "token": "union",
+      "id": 223,
+      "freq": 32
+    },
+    {
+      "token": "strcat",
+      "id": 224,
+      "freq": 26
+    },
+    {
+      "token": "vsnprintf",
+      "id": 225,
+      "freq": 21
+    },
+    {
+      "token": "fgets",
+      "id": 226,
+      "freq": 20
+    },
+    {
+      "token": "strncat",
+      "id": 227,
+      "freq": 17
+    },
+    {
+      "token": "realloc",
+      "id": 228,
+      "freq": 15
+    },
+    {
+      "token": "calloc",
+      "id": 229,
+      "freq": 12
+    },
+    {
+      "token": "typedef",
+      "id": 230,
+      "freq": 9
+    },
+    {
+      "token": "<empty>",
+      "id": 231,
+      "freq": 8
+    },
+    {
+      "token": "alloca",
+      "id": 232,
+      "freq": 8
+    },
+    {
+      "token": "extern",
+      "id": 233,
+      "freq": 8
+    },
+    {
+      "token": "fscanf",
+      "id": 234,
+      "freq": 8
+    },
+    {
+      "token": "memchr",
+      "id": 235,
+      "freq": 5
+    },
+    {
+      "token": "fputs",
+      "id": 236,
+      "freq": 3
+    },
+    {
+      "token": "getchar",
+      "id": 237,
+      "freq": 2
+    },
+    {
+      "token": "<PAD>",
+      "id": 0,
+      "freq": 0
+    },
+    {
+      "token": "<UNK>",
+      "id": 1,
+      "freq": 0
+    },
+    {
+      "token": "<BOS>",
+      "id": 2,
+      "freq": 0
+    },
+    {
+      "token": "<EOS>",
+      "id": 3,
+      "freq": 0
+    }
+  ]
+}

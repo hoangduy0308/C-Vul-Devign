@@ -1,0 +1,83 @@
+{
+  "split": "val",
+  "num_samples": 2728,
+  "max_sequence_length": 512,
+  "max_slices_per_sample": 6,
+  "max_slice_length": 256,
+  "labels": {
+    "num_classes": 2,
+    "mapping": {
+      "0": "non_vulnerable",
+      "1": "vulnerable"
+    },
+    "distribution": {
+      "0": 1544,
+      "1": 1184
+    }
+  },
+  "tensors": {
+    "input_ids": {
+      "shape": [
+        2728,
+        512
+      ],
+      "dtype": "int32",
+      "description": "Token IDs for full sequence; padded with 0."
+    },
+    "attention_mask": {
+      "shape": [
+        2728,
+        512
+      ],
+      "dtype": "int32",
+      "description": "1 for real tokens, 0 for padding."
+    },
+    "labels": {
+      "shape": [
+        2728
+      ],
+      "dtype": "int32"
+    },
+    "slice_input_ids": {
+      "shape": [
+        2728,
+        6,
+        256
+      ],
+      "dtype": "int32"
+    },
+    "slice_attention_mask": {
+      "shape": [
+        2728,
+        6,
+        256
+      ],
+      "dtype": "int32"
+    },
+    "slice_count": {
+      "shape": [
+        2728
+      ],
+      "dtype": "int32",
+      "description": "Number of real slices per sample (≤ 6)."
+    }
+  },
+  "special_tokens": {
+    "pad": {
+      "id": 0,
+      "token": "<PAD>"
+    },
+    "unk": {
+      "id": 1,
+      "token": "<UNK>"
+    },
+    "bos": {
+      "id": 2,
+      "token": "<BOS>"
+    },
+    "eos": {
+      "id": 3,
+      "token": "<EOS>"
+    }
+  }
+}
