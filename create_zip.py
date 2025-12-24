@@ -31,7 +31,11 @@ with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
             full_path = os.path.join(root, file)
             # Create archive name with forward slashes (for Linux/Kaggle compatibility)
             arc_name = os.path.relpath(full_path, src).replace('\\', '/')
-            zf.write(full_path, arc_name)
+            # Use ZipInfo to ensure forward slashes are preserved
+            info = zipfile.ZipInfo(arc_name)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            with open(full_path, 'rb') as f:
+                zf.writestr(info, f.read())
             print(f'  {arc_name}')
             count += 1
 

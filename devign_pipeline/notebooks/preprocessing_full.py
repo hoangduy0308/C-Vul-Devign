@@ -30,7 +30,7 @@ PIPELINE_ROOT = NOTEBOOK_DIR.parent if NOTEBOOK_DIR.name == 'notebooks' else NOT
 
 if os.path.exists('/kaggle/input'):
     # Kaggle environment
-    sys.path.insert(0, '/kaggle/input/devign-pipeline/devign_pipeline')
+    sys.path.insert(0, '/kaggle/input/devign-pipeline')
     DATA_DIR = '/kaggle/input/devign'
     WORKING_DIR = '/kaggle/working'
 else:
