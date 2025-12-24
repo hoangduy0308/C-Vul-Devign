@@ -23,6 +23,7 @@ import shutil
 
 import pandas as pd
 import numpy as np
+import re
 
 import sys
 sys.path.insert(0, '/media/hdi/Hdii/Work/C Vul Devign/devign_pipeline')
@@ -39,11 +40,42 @@ from src.graphs.cfg import CFGBuilder, CFG, serialize_cfg, deserialize_cfg
 from src.graphs.dfg import DFGBuilder, DFG, serialize_dfg, deserialize_dfg
 from src.slicing.slicer import CodeSlicer, SliceConfig, SliceType
 from src.tokenization.tokenizer import CTokenizer
-from src.tokenization.normalization import CodeNormalizer, NormalizationMaps
+from src.tokenization.normalization import (
+    CodeNormalizer, NormalizationMaps,
+    Token as NormToken, TokenType as NormTokenType, C_KEYWORDS
+)
 from src.tokenization.vocab import Vocabulary, VocabBuilder, VocabConfig
 from src.utils.checkpoint import CheckpointManager
 from src.utils.logging import get_logger
 from src.vuln.vuln_lines import extract_vul_line_numbers
+
+
+# Pre-compiled regex patterns for token type detection
+_HEX_PATTERN = re.compile(r'^0[xX][0-9a-fA-F]+[uUlL]*$')
+_BINARY_PATTERN = re.compile(r'^0[bB][01]+[uUlL]*$')
+_OCTAL_PATTERN = re.compile(r'^0[0-7]+[uUlL]*$')
+_NUMBER_PATTERN = re.compile(r'^[0-9]+(\.[0-9]*)?([eE][+-]?[0-9]+)?[fFlLuU]*$')
+_STRING_PATTERN = re.compile(r'^".*"$', re.DOTALL)
+_CHAR_PATTERN = re.compile(r"^'.*'$")
+
+
+def detect_token_type(token_value: str) -> NormTokenType:
+    """Detect token type based on its value."""
+    if token_value in C_KEYWORDS:
+        return NormTokenType.KEYWORD
+    if _HEX_PATTERN.match(token_value):
+        return NormTokenType.HEX
+    if _BINARY_PATTERN.match(token_value):
+        return NormTokenType.NUMBER
+    if _OCTAL_PATTERN.match(token_value):
+        return NormTokenType.NUMBER
+    if _NUMBER_PATTERN.match(token_value):
+        return NormTokenType.NUMBER
+    if _STRING_PATTERN.match(token_value):
+        return NormTokenType.STRING
+    if _CHAR_PATTERN.match(token_value):
+        return NormTokenType.CHAR
+    return NormTokenType.IDENTIFIER
 
 
 class StepStatus(Enum):
@@ -909,9 +941,7 @@ class PreprocessPipeline:
             norm_maps_list = []
             
             for tokens in tokenized_results:
-                # Create Token objects for normalizer
-                from src.tokenization.normalization import Token as NormToken, TokenType as NormTokenType
-                token_objs = [NormToken(value=t, type=NormTokenType.IDENTIFIER) for t in tokens]
+                token_objs = [NormToken(value=t, type=detect_token_type(t)) for t in tokens]
                 
                 normalized, maps = self.normalizer.normalize_tokens(token_objs)
                 normalized_results.append(normalized)

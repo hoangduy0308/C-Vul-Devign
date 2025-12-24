@@ -122,6 +122,29 @@ class SimplifiedLoss(nn.Module):
             raise ValueError(f"Unknown loss_type: {self.loss_type}")
 
 
+def get_probs_from_logits(logits: torch.Tensor) -> torch.Tensor:
+    """
+    Convert logits to probabilities, handling both [B, 2] and [B, 1] shapes.
+    
+    Args:
+        logits: Model output, either [B, 2] (2-class) or [B, 1] (single logit)
+        
+    Returns:
+        Probabilities tensor of shape [B]
+    """
+    if logits.dim() == 2 and logits.size(1) == 2:
+        # 2-class output: use class 1 logit
+        return torch.sigmoid(logits[:, 1])
+    elif logits.dim() == 2 and logits.size(1) == 1:
+        # Single logit output
+        return torch.sigmoid(logits.squeeze(1))
+    elif logits.dim() == 1:
+        # Already 1D
+        return torch.sigmoid(logits)
+    else:
+        raise ValueError(f"Unexpected logits shape: {logits.shape}")
+
+
 def compute_pos_weight(labels: np.ndarray) -> float:
     """
     Compute pos_weight for BCEWithLogitsLoss.

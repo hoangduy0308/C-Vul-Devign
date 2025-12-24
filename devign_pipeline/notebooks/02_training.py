@@ -60,6 +60,7 @@ from src.training.train_simplified import (
     SimplifiedLoss,
     compute_pos_weight,
     get_pos_weight_for_config,
+    get_probs_from_logits,
     compute_metrics,
     EvalMetrics,
     aggregate_results,
@@ -589,7 +590,7 @@ def train_epoch(
         
         total_loss += loss.item() * config.accumulation_steps
         
-        probs = torch.sigmoid(logits.detach()[:, 1]).cpu().numpy()
+        probs = get_probs_from_logits(logits.detach()).cpu().numpy()
         all_probs.extend(probs)
         all_labels.extend(labels.cpu().numpy())
     
@@ -638,7 +639,7 @@ def evaluate(
             loss = criterion(logits, labels)
         
         total_loss += loss.item()
-        probs = torch.sigmoid(logits[:, 1]).cpu().numpy()
+        probs = get_probs_from_logits(logits).cpu().numpy()
         all_probs.extend(probs)
         all_labels.extend(labels.cpu().numpy())
     

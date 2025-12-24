@@ -4,6 +4,6 @@ output/
 venv/
 *.log
 Dataset/
-models/
+
 *.pt
 *.pth
