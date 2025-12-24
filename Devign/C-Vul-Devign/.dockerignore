@@ -1,0 +1,35 @@
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+.git/
+.gitignore
+.github/
+*.md
+*.log
+
+# Large data files
+Output/
+output/
+Dataset/
+checkpoints/
+checkpoints_v2/
+*.npz
+*.npy
+*.jsonl
+
+# Development
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# Notebooks
+notebooks/
+*.ipynb
