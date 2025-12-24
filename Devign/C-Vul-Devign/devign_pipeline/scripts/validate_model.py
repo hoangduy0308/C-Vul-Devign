@@ -5,35 +5,11 @@ import json
 import sys
 from pathlib import Path
 
-import torch
-from sklearn.metrics import f1_score, roc_auc_score, precision_score, recall_score
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-from devign_pipeline.src.models.slice_attention_bigru import create_model
 
 ENSEMBLE_CONFIG_PATH = Path("ensemble_config.json")
-VAL_DATA_PATH = Path("tests/data/val_samples.jsonl")
 
 F1_THRESHOLD = 0.74
 AUC_THRESHOLD = 0.87
-
-
-def load_model(model_path: Path, device: torch.device):
-    model_config = {
-        "vocab_size": 5000,
-        "emb_dim": 128,
-        "hidden_dim": 128,
-        "feat_dim": 64,
-        "num_layers": 1,
-        "dropout": 0.3,
-    }
-    model = create_model(model_config)
-    state_dict = torch.load(model_path, map_location=device, weights_only=True)
-    model.load_state_dict(state_dict)
-    model.to(device)
-    model.eval()
-    return model
 
 
 def load_ensemble_config() -> dict:
@@ -42,21 +18,7 @@ def load_ensemble_config() -> dict:
     return {"optimal_threshold": 0.37}
 
 
-def load_validation_data():
-    if not VAL_DATA_PATH.exists():
-        print(f"WARNING: Validation data not found at {VAL_DATA_PATH}")
-        print("Using ensemble_config.json metrics for validation")
-        return None
-    
-    samples = []
-    with VAL_DATA_PATH.open() as f:
-        for line in f:
-            if line.strip():
-                samples.append(json.loads(line))
-    return samples
-
-
-def validate_from_config(config: dict) -> bool:
+def validate_from_config(config: dict, f1_min: float, auc_min: float) -> bool:
     print("=" * 60)
     print("Model Validation Report (from ensemble_config.json)")
     print("=" * 60)
@@ -69,24 +31,24 @@ def validate_from_config(config: dict) -> bool:
     
     print(f"\nThreshold: {threshold:.4f}")
     print(f"\nMetrics:")
-    print(f"  F1 Score:  {test_f1:.4f} (threshold: {F1_THRESHOLD})")
-    print(f"  AUC-ROC:   {test_auc:.4f} (threshold: {AUC_THRESHOLD})")
+    print(f"  F1 Score:  {test_f1:.4f} (threshold: {f1_min})")
+    print(f"  AUC-ROC:   {test_auc:.4f} (threshold: {auc_min})")
     print(f"  Precision: {test_precision:.4f}")
     print(f"  Recall:    {test_recall:.4f}")
     
     passed = True
     print("\nValidation Results:")
     
-    if test_f1 >= F1_THRESHOLD:
-        print(f"  ✓ F1 >= {F1_THRESHOLD}: PASSED")
+    if test_f1 >= f1_min:
+        print(f"  [PASS] F1 >= {f1_min}")
     else:
-        print(f"  ✗ F1 >= {F1_THRESHOLD}: FAILED")
+        print(f"  [FAIL] F1 >= {f1_min}")
         passed = False
     
-    if test_auc >= AUC_THRESHOLD:
-        print(f"  ✓ AUC >= {AUC_THRESHOLD}: PASSED")
+    if test_auc >= auc_min:
+        print(f"  [PASS] AUC >= {auc_min}")
     else:
-        print(f"  ✗ AUC >= {AUC_THRESHOLD}: FAILED")
+        print(f"  [FAIL] AUC >= {auc_min}")
         passed = False
     
     print("=" * 60)
@@ -118,23 +80,19 @@ def main() -> None:
     
     config = load_ensemble_config()
     
-    if not args.model_path.exists():
+    if args.model_path.exists():
+        print(f"Model file found: {args.model_path}")
+    else:
         print(f"Model file not found: {args.model_path}")
         print("Validating using ensemble_config.json metrics only...")
-        passed = validate_from_config(config)
-    else:
-        val_data = load_validation_data()
-        if val_data is None:
-            passed = validate_from_config(config)
-        else:
-            print("Running full validation on test data...")
-            passed = validate_from_config(config)
+    
+    passed = validate_from_config(config, args.f1_threshold, args.auc_threshold)
     
     if passed:
-        print("\n✓ MODEL VALIDATION PASSED")
+        print("\n[SUCCESS] MODEL VALIDATION PASSED")
         sys.exit(0)
     else:
-        print("\n✗ MODEL VALIDATION FAILED")
+        print("\n[FAILED] MODEL VALIDATION FAILED")
         sys.exit(1)
 
 
