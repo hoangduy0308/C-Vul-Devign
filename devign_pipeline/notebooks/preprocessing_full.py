@@ -70,14 +70,15 @@ except ImportError:
 TOKENIZER_TYPE = 'preserve'
 
 # PDG-based slicing configuration
+# Tuned based on SySeVR/DeepWukong unbounded traversal approach but with budget limits
 PDG_SLICE_CONFIG = {
-    'backward_depth': 2,             # Max 2 hops backward (follows actual deps)
-    'forward_depth': 1,              # Max 1 hop forward
+    'backward_depth': 3,             # Max 3 hops backward (follows actual deps)
+    'forward_depth': 2,              # Max 2 hops forward
     'include_data_deps': True,       # Include data dependencies
     'include_control_deps': True,    # Include control dependencies
     'control_predicate_only': True,  # Only include if/while headers, not full blocks
-    'max_lines': 15,                 # Hard cap on output lines
-    'max_tokens': 150,               # Hard cap on tokens
+    'max_lines': 30,                 # Hard cap on output lines
+    'max_tokens': 256,               # Hard cap on tokens
     'fallback_window': 3,            # Small fallback if PDG fails
 }
 
@@ -178,14 +179,32 @@ train_df = loader.load_all(split='train')
 val_df = loader.load_all(split='validation')
 test_df = loader.load_all(split='test')
 
-# Validate columns exist and handle NaN
-for split_name, df in [('train', train_df), ('val', val_df), ('test', test_df)]:
+# Validate columns exist and drop rows with NaN/empty/whitespace-only func
+for split_name in ['train', 'val', 'test']:
+    df = {'train': train_df, 'val': val_df, 'test': test_df}[split_name]
     assert 'func' in df.columns, f"Missing 'func' column in {split_name}"
     assert 'target' in df.columns, f"Missing 'target' column in {split_name}"
+    
+    original_count = len(df)
     nan_count = df['func'].isna().sum()
-    if nan_count > 0:
-        print(f"Warning: {split_name} has {nan_count} NaN values in 'func' column, replacing with empty string")
-        df['func'] = df['func'].fillna('')
+    empty_count = (df['func'].fillna('') == '').sum() - nan_count
+    whitespace_count = df['func'].fillna('').str.strip().eq('').sum() - nan_count - empty_count
+    
+    # Drop rows with NaN, empty, or whitespace-only func
+    valid_mask = df['func'].notna() & (df['func'].str.strip() != '')
+    df_clean = df[valid_mask].reset_index(drop=True)
+    
+    dropped_count = original_count - len(df_clean)
+    if dropped_count > 0:
+        print(f"Warning: {split_name} dropped {dropped_count} rows (NaN: {nan_count}, empty: {empty_count}, whitespace-only: {whitespace_count})")
+    
+    # Update the dataframe
+    if split_name == 'train':
+        train_df = df_clean
+    elif split_name == 'val':
+        val_df = df_clean
+    else:
+        test_df = df_clean
 
 print(f"\nDataset loaded:")
 print(f"  Train: {len(train_df)} samples (vuln: {(train_df['target']==1).sum()})")
@@ -284,8 +303,22 @@ slicer = PDGSlicer(pdg_config)
 
 
 def estimate_tokens(code: str) -> int:
-    """Rough token count estimate."""
-    return len(re.findall(r'\b\w+\b|[^\s\w]', code))
+    """Estimate token count by counting words, operators, and punctuation.
+    
+    Counts:
+    - Words/identifiers (e.g., 'malloc', 'buf', 'i')
+    - Multi-char operators (e.g., '==', '!=', '->', '<<')
+    - Single-char operators and punctuation (e.g., '+', ';', '{')
+    """
+    # Multi-char operators (order matters - check longer first)
+    multi_ops = re.findall(r'->|<<|>>|<=|>=|==|!=|&&|\|\||\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<=|>>=', code)
+    # Remove multi-char operators to avoid double counting
+    code_clean = re.sub(r'->|<<|>>|<=|>=|==|!=|&&|\|\||\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<=|>>=', ' ', code)
+    # Words/identifiers and numbers
+    words = re.findall(r'\b\w+\b', code_clean)
+    # Single-char operators and punctuation
+    single_ops = re.findall(r'[+\-*/%&|^~!<>=;:,.\[\]{}()#?]', code_clean)
+    return len(words) + len(multi_ops) + len(single_ops)
 
 
 def insert_sep_in_middle(code: str, sep_token: str = "[SEP]") -> str:
@@ -301,6 +334,8 @@ def insert_sep_in_middle(code: str, sep_token: str = "[SEP]") -> str:
 
 def process_pdg_slice_batch(df, batch_size=500):
     """Process PDG-based slicing in batches with fallback for short slices."""
+    from collections import defaultdict
+    
     codes = df['func'].tolist()
     n_samples = len(codes)
     
@@ -311,6 +346,7 @@ def process_pdg_slice_batch(df, batch_size=500):
     sliced_codes = []
     fallback_count = 0
     pdg_success_count = 0
+    exception_counts = defaultdict(int)
     
     for start in tqdm(range(0, n_samples, batch_size), desc="PDG Slicing"):
         end = min(start + batch_size, n_samples)
@@ -335,9 +371,14 @@ def process_pdg_slice_batch(df, batch_size=500):
             except Exception as e:
                 sliced_codes.append(insert_sep_in_middle(code))
                 fallback_count += 1
+                exception_counts[type(e).__name__] += 1
     
     print(f"  PDG success: {pdg_success_count}/{n_samples} ({100*pdg_success_count/n_samples:.1f}%)")
     print(f"  Fallback to full function: {fallback_count} samples")
+    if exception_counts:
+        print(f"  Exceptions summary:")
+        for exc_type, count in sorted(exception_counts.items(), key=lambda x: -x[1]):
+            print(f"    {exc_type}: {count}")
     return sliced_codes
 
 
@@ -614,12 +655,57 @@ else:
     train_unk_pos = [[] for _ in range(len(train_tokens))]
     val_unk_pos = [[] for _ in range(len(val_tokens))]
     test_unk_pos = [[] for _ in range(len(test_tokens))]
-    train_vec_stats = val_vec_stats = test_vec_stats = {'unk_rate': 0, 'top_unk_tokens': [], 'total_tokens': 0, 'total_unks': 0}
+    
+    def compute_unk_stats(input_ids_array, tokens_list, unk_id=1):
+        """Compute UNK statistics from vectorized input_ids.
+        
+        Args:
+            input_ids_array: numpy array of shape (n_samples, max_len)
+            tokens_list: list of token lists (before vectorization)
+            unk_id: vocab ID for UNK token (default: 1)
+        
+        Returns:
+            dict with unk_rate, top_unk_tokens, total_tokens, total_unks
+        """
+        from collections import Counter
+        unk_counter = Counter()
+        total_tokens = 0
+        total_unks = 0
+        
+        for i, tokens in enumerate(tokens_list):
+            ids = input_ids_array[i]
+            # Only count actual tokens (not padding)
+            seq_len = min(len(tokens), len(ids))
+            for j in range(seq_len):
+                total_tokens += 1
+                if ids[j] == unk_id:
+                    total_unks += 1
+                    if j < len(tokens):
+                        unk_counter[tokens[j]] += 1
+        
+        unk_rate = total_unks / total_tokens if total_tokens > 0 else 0
+        top_unk_tokens = unk_counter.most_common(50)
+        
+        return {
+            'unk_rate': unk_rate,
+            'top_unk_tokens': top_unk_tokens,
+            'total_tokens': total_tokens,
+            'total_unks': total_unks
+        }
+    
+    train_vec_stats = compute_unk_stats(train_input_ids, train_tokens)
+    val_vec_stats = compute_unk_stats(val_input_ids, val_tokens)
+    test_vec_stats = compute_unk_stats(test_input_ids, test_tokens)
     
     print(f"\nVectorization completed:")
-    print(f"  Train: {train_input_ids.shape}")
-    print(f"  Val: {val_input_ids.shape}")
-    print(f"  Test: {test_input_ids.shape}")
+    print(f"  Train: {train_input_ids.shape}, UNK rate: {train_vec_stats['unk_rate']:.2%}")
+    print(f"  Val: {val_input_ids.shape}, UNK rate: {val_vec_stats['unk_rate']:.2%}")
+    print(f"  Test: {test_input_ids.shape}, UNK rate: {test_vec_stats['unk_rate']:.2%}")
+    
+    if train_vec_stats['top_unk_tokens']:
+        print(f"\nTop UNK tokens (train):")
+        for tok, count in train_vec_stats['top_unk_tokens'][:15]:
+            print(f"  {tok}: {count}")
 
 # %% [markdown]
 # ## 10. Process Vulnerability Features

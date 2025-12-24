@@ -45,6 +45,21 @@ from sklearn.metrics import (
 )
 from tqdm.auto import tqdm
 
+# Import imbalance handling utilities
+try:
+    from src.training.imbalance import (
+        compute_class_weights,
+        get_pos_weight,
+        get_balanced_sampler,
+        find_optimal_threshold as find_optimal_threshold_util,
+        FocalLoss as FocalLossUtil,
+        print_class_distribution,
+    )
+    IMBALANCE_UTILS_AVAILABLE = True
+except ImportError:
+    IMBALANCE_UTILS_AVAILABLE = False
+    print("Warning: src.training.imbalance not available, using built-in implementations")
+
 # Environment setup
 if os.path.exists('/kaggle/input'):
     WORKING_DIR = '/kaggle/working'
@@ -2039,7 +2054,10 @@ train_loader, val_loader, test_loader = create_dataloaders(
 
 # Class distribution
 train_labels = train_loader.dataset.labels
-print(f"Class: neg={np.sum(train_labels==0)}, pos={np.sum(train_labels==1)}")
+if IMBALANCE_UTILS_AVAILABLE:
+    print_class_distribution(train_labels, "Train")
+else:
+    print(f"Class: neg={np.sum(train_labels==0)}, pos={np.sum(train_labels==1)}")
 
 # %% [markdown]
 # ## 4. Hybrid BiGRU Model with V2 Features
@@ -3156,25 +3174,34 @@ def train(model, train_loader, val_loader, config):
         weight = None  # No class weights at all
         print(f"Class weights: DISABLED (unweighted CrossEntropyLoss)")
     else:
-        # Quick Win 1.1: Precision-focused class weighting
-        use_precision_focused = getattr(config, 'use_precision_focused_weight', False)
-        if use_precision_focused:
-            # Boost negative class weight to reduce false positives (improve precision)
-            neg_boost = getattr(config, 'neg_weight_boost', 1.15)
-            pos_reduce = getattr(config, 'pos_weight_reduce', 0.85)
-            
-            # Compute base ratio and apply precision focus
-            base_ratio = float(neg_count) / float(pos_count)
-            w_neg = neg_boost  # Increase penalty for FP (predicting 1 when actual is 0)
-            w_pos = base_ratio * pos_reduce  # Slightly reduce weight on positives
-            
-            weight = torch.tensor([w_neg, w_pos], dtype=torch.float32, device=DEVICE)
-            print(f"Precision-focused weights: neg={w_neg:.3f}, pos={w_pos:.3f} (boost={neg_boost}, reduce={pos_reduce})")
+        # Option 1: Use imbalance utilities from src.training.imbalance
+        use_imbalance_utils = getattr(config, 'use_imbalance_utils', False) and IMBALANCE_UTILS_AVAILABLE
+        
+        if use_imbalance_utils:
+            # Use pos_weight from imbalance module (n_neg / n_pos)
+            pos_weight_value = get_pos_weight(np.array(all_labels))
+            weight = torch.tensor([1.0, pos_weight_value], dtype=torch.float32, device=DEVICE)
+            print(f"Imbalance utils weights: neg=1.0, pos={pos_weight_value:.3f} (from get_pos_weight)")
         else:
-            # Original: Slight boost to minority class if imbalanced
-            ratio = float(neg_count) / float(pos_count)
-            weight = torch.tensor([1.0, ratio], dtype=torch.float32, device=DEVICE)
-            print(f"Standard class weights: neg=1.0, pos={ratio:.3f}")
+            # Quick Win 1.1: Precision-focused class weighting
+            use_precision_focused = getattr(config, 'use_precision_focused_weight', False)
+            if use_precision_focused:
+                # Boost negative class weight to reduce false positives (improve precision)
+                neg_boost = getattr(config, 'neg_weight_boost', 1.15)
+                pos_reduce = getattr(config, 'pos_weight_reduce', 0.85)
+                
+                # Compute base ratio and apply precision focus
+                base_ratio = float(neg_count) / float(pos_count)
+                w_neg = neg_boost  # Increase penalty for FP (predicting 1 when actual is 0)
+                w_pos = base_ratio * pos_reduce  # Slightly reduce weight on positives
+                
+                weight = torch.tensor([w_neg, w_pos], dtype=torch.float32, device=DEVICE)
+                print(f"Precision-focused weights: neg={w_neg:.3f}, pos={w_pos:.3f} (boost={neg_boost}, reduce={pos_reduce})")
+            else:
+                # Original: Slight boost to minority class if imbalanced
+                ratio = float(neg_count) / float(pos_count)
+                weight = torch.tensor([1.0, ratio], dtype=torch.float32, device=DEVICE)
+                print(f"Standard class weights: neg=1.0, pos={ratio:.3f}")
     
     # Dynamic label smoothing schedule
     base_smoothing = float(getattr(config, 'label_smoothing', 0.0))
