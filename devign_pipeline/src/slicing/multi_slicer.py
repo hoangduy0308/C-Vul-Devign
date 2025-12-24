@@ -105,11 +105,19 @@ class MultiCodeSlicer:
     def _combine_slices(self, backward: CodeSlice, forward: CodeSlice) -> str:
         """
         Combine backward and forward slices with separator.
-        Always inserts SEP between backward and forward slices.
-        SEP is always present even if one slice is empty.
+        Removes overlapping lines from forward to avoid duplication.
         """
+        # Remove overlapping lines from forward
+        forward_only_lines = forward.included_lines - backward.included_lines
+        
+        # Rebuild forward code from non-overlapping lines only
+        if forward_only_lines and forward.original_code:
+            forward_code = self._extract_lines_code(forward.original_code, forward_only_lines)
+        else:
+            forward_code = ""
+        
         backward_code = backward.code.strip()
-        forward_code = forward.code.strip()
+        forward_code = forward_code.strip()
         sep = f" {self.config.sep_token} "
         sep_tokens = 1
         
@@ -147,22 +155,43 @@ class MultiCodeSlicer:
         truncated_backward = self._truncate_to_tokens(backward_code, backward_budget)
         truncated_forward = self._truncate_to_tokens(forward_code, forward_budget)
         
-        # Always include SEP even if forward is truncated to empty
         return f"{truncated_backward}{sep}{truncated_forward}"
     
     def _extract_lines_code(self, code: str, line_numbers: Set[int]) -> str:
-        """Extract specific lines from code."""
+        """Extract specific lines from code with consistent dedent."""
         if not line_numbers:
             return ""
         
         lines = code.split('\n')
-        result = []
+        extracted = []
         
         for line_num in sorted(line_numbers):
             if 1 <= line_num <= len(lines):
                 line = lines[line_num - 1]
-                if line.strip():
-                    result.append(line.strip())
+                if line.strip():  # Skip empty lines
+                    extracted.append(line)
+        
+        if not extracted:
+            return ""
+        
+        # Find minimum indentation and dedent consistently
+        min_indent = float('inf')
+        for line in extracted:
+            stripped = line.lstrip()
+            if stripped:
+                indent = len(line) - len(stripped)
+                min_indent = min(min_indent, indent)
+        
+        if min_indent == float('inf'):
+            min_indent = 0
+        
+        # Dedent all lines by min_indent
+        result = []
+        for line in extracted:
+            if len(line) >= min_indent:
+                result.append(line[int(min_indent):])
+            else:
+                result.append(line.lstrip())
         
         return '\n'.join(result)
     

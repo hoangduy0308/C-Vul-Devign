@@ -46,14 +46,14 @@ from sklearn.metrics import (
 from tqdm.auto import tqdm
 
 # Environment setup
-if os.path.exists('/kaggle'):
+if os.path.exists('/kaggle/input'):
     WORKING_DIR = '/kaggle/working'
     DATA_DIR = '/kaggle/input/devign-final/processed'
     sys.path.insert(0, '/tmp/devign_pipeline')
 else:
-    WORKING_DIR = '/media/hdi/Hdii/Work/C Vul Devign'
-    DATA_DIR = '/media/hdi/Hdii/Work/C Vul Devign/Dataset/devign_slice_v3'
-    sys.path.insert(0, '/media/hdi/Hdii/Work/C Vul Devign/devign_pipeline')
+    WORKING_DIR = 'f:/Work/C Vul Devign'
+    DATA_DIR = 'f:/Work/C Vul Devign/Dataset/devign_final'
+    sys.path.insert(0, 'f:/Work/C Vul Devign/devign_pipeline')
 
 MODEL_DIR = os.path.join(WORKING_DIR, 'models')
 LOG_DIR = os.path.join(WORKING_DIR, 'logs')
@@ -87,16 +87,22 @@ data_config = load_data_config(DATA_DIR)
 
 class TrainConfig:
     """Training hyperparameters - optimized for Devign dataset"""
-    # Model (REDUCED CAPACITY to combat overfitting - vocab=371, 21K samples)
-    # Oracle analysis showed Train F1=0.79 vs Best Val F1=0.71 at epoch 17
-    vocab_size: int = data_config.get('vocab_size', 371)
-    embed_dim: int = 64           # DOWN from 128 - smaller vocab needs less embedding capacity
+    # Model - vocab_size loaded from config.json (v3: 30k tokens)
+    # v3 improvements: UNK rate reduced from 4-5% to ~1-2%, critical tokens preserved
+    vocab_size: int = data_config.get('vocab_size', 30000)
+    embed_dim: int = 128          # UP from 64 - larger vocab needs more embedding capacity
     hidden_dim: int = 128         # DOWN from 256 - BiGRU output = 256 (bidirectional)
     num_layers: int = 1           # DOWN from 2 - single layer less prone to overfitting
     rnn_dropout: float = 0.3      # Dropout between GRU layers (not used for num_layers=1)
     embedding_dropout: float = 0.15  # NEW - dropout after embedding layer
     classifier_dropout: float = 0.4  # DOWN from 0.5 - rebalanced with embedding dropout
     bidirectional: bool = True
+    
+    # Pretrained embedding options
+    use_pretrained_embedding: bool = True
+    embedding_path: str = ""  # Will be set from data_dir if empty
+    freeze_embedding: bool = False  # Fine-tune by default
+    embedding_lr_scale: float = 0.1  # Lower LR for pretrained embeddings
     
     # Hybrid Model Features (V2) - disabled for v3 dataset (no vuln features)
     use_vuln_features: bool = False
@@ -153,7 +159,7 @@ class LargeTrainConfig(TrainConfig):
     - Packed sequences enabled for 30-40% speedup
     """
     # Model capacity (INCREASED)
-    embed_dim: int = 64
+    embed_dim: int = 128          # Match base config for vocab 30k
     hidden_dim: int = 192         # UP from 128 - BiGRU output = 384
     num_layers: int = 2           # UP from 1 - stacked BiGRU
 
@@ -251,7 +257,7 @@ class ImprovedConfig(TrainConfig):
     - Tighter early stopping (patience=3, min_delta=5e-4)
     """
     # Model capacity (REDUCED for better generalization)
-    embed_dim: int = 64
+    embed_dim: int = 128              # vocab 30k needs larger embedding
     hidden_dim: int = 128             # DOWN from 192 - BiGRU output = 256
     num_layers: int = 2               # Keep 2 layers for expressiveness
     
@@ -1175,15 +1181,700 @@ class AdvancedConfigV5(FinalConfig):
         return cfg
 
 
-# Use AdvancedConfigV5 for this training run (Simplified Branch A - Oracle recommendation)
-config = AdvancedConfigV5()
+class AdvancedConfigV6(FinalConfig):
+    """
+    AdvancedConfigV6 - ANTI-OVERFITTING configuration based on Oracle analysis.
+    
+    V5 Results (SEVERE OVERFITTING):
+    - Train F1: 0.80, Val F1: 0.56 (huge gap)
+    - Train Loss: 0.40, Val Loss: 0.85 (diverging)
+    - Early stopping was broken (didn't trigger)
+    - Model predicts "vulnerable" 82% of the time → FP=1102
+    
+    V6 Strategy - MAXIMUM REGULARIZATION:
+    1. Early stopping on VAL_LOSS (not F1) - catches overfitting earlier
+    2. Patience reduced to 3 - stop much earlier
+    3. HEAVY dropout across all layers (0.35-0.50)
+    4. STRONG weight decay (2e-2)
+    5. REDUCED model capacity (hidden_dim=128)
+    6. Use F0.5 threshold objective to reduce FP
+    7. Lower threshold bounds to favor precision
+    """
+    
+    # --- Model Capacity REDUCED ---
+    hidden_dim: int = 128                     # DOWN from 192
+    num_attention_heads: int = 4              # DOWN from 6
+    vuln_feature_hidden_dim: int = 64         # DOWN from 96
+    
+    # --- Dropout INCREASED significantly ---
+    classifier_dropout: float = 0.50          # UP from 0.25 (Oracle: 0.45-0.55)
+    rnn_dropout: float = 0.40                 # UP from 0.22 (Oracle: 0.35-0.45)
+    embedding_dropout: float = 0.25           # UP from 0.10 (Oracle: 0.20-0.30)
+    attention_dropout: float = 0.25           # UP from 0.10
+    vuln_feature_dropout: float = 0.30        # UP from 0.18
+    
+    # --- Class weighting NEUTRAL ---
+    use_precision_focused_weight: bool = False
+    neg_weight_boost: float = 1.0
+    pos_weight_reduce: float = 1.0
+    
+    # --- Focal Loss DISABLED ---
+    use_focal_weight: bool = False
+    use_focal_alpha: bool = False
+    focal_gamma: float = 0.0
+    focal_alpha_pos: float = 0.5
+    focal_alpha_neg: float = 0.5
+    
+    # --- Label smoothing DISABLED (Oracle: 0.0) ---
+    label_smoothing: float = 0.0
+    label_smoothing_warmup_epochs: int = 0
+    
+    # --- Token augmentation MINIMAL ---
+    use_token_augmentation: bool = True
+    token_dropout_prob: float = 0.05
+    token_mask_prob: float = 0.03
+    
+    # --- Learning rate / scheduler ---
+    scheduler_type: str = 'plateau'
+    learning_rate: float = 3e-4               # DOWN from 4e-4
+    max_lr: float = 1e-3                      # DOWN from 1.5e-3
+    scheduler_patience: int = 2               # DOWN from 3 (Oracle: 1-2)
+    scheduler_factor: float = 0.5
+    scheduler_min_lr: float = 1e-6
+    
+    # --- STRONG weight decay (Oracle recommendation) ---
+    weight_decay: float = 2e-2                # UP from 1e-2 (Oracle: 1e-2 to 2e-2)
+    
+    # --- SWA DISABLED for now (focus on base model) ---
+    use_swa: bool = False
+    swa_start_epoch: int = 10
+    swa_lr: float = 5e-5
+    
+    # --- Training duration SHORTER ---
+    max_epochs: int = 20                      # DOWN from 30
+    patience: int = 4                         # DOWN from 7 (Oracle: 3-4)
+    min_delta: float = 3e-4                   # UP from 2e-4 (more sensitive)
+    
+    # --- EARLY STOPPING METRIC: loss instead of F1 (Oracle key fix) ---
+    early_stopping_metric: str = 'val_loss'   # NEW! (was implicit F1)
+    
+    # --- Ensemble DISABLED ---
+    ensemble_size: int = 1
+    use_diverse_ensemble: bool = False
+    ensemble_dropout_variations: tuple = (0.0,)
+    
+    # --- Threshold: F0.5 objective or precision-constrained (Oracle fix) ---
+    # F0.5 weights precision more than recall
+    threshold_min: float = 0.35               # UP from 0.50 (allow search)
+    threshold_max: float = 0.70               # UP to allow higher thresholds
+    threshold_step: float = 0.005
+    threshold_objective: str = 'f0.5'         # CHANGED from 'f1' (weights precision)
+    min_precision_constraint: float = 0.60    # NEW: if using precision_constrained
+    min_recall_constraint: float = 0.70
+    
+    # --- Fine-tuning tail DISABLED (focus on early stopping) ---
+    use_finetune_tail: bool = False
+    finetune_epochs: int = 3
+    finetune_lr: float = 1e-5
+    
+    # --- Gradient clipping ---
+    grad_clip: float = 1.0
+    
+    # --- Batch size ---
+    batch_size: int = 128
+    accumulation_steps: int = 1
+    
+    def to_dict(self) -> Dict:
+        """Export config to plain dict."""
+        cfg: Dict[str, Any] = {}
+        for cls in reversed(self.__class__.mro()):
+            if cls is object:
+                continue
+            for k, v in cls.__dict__.items():
+                if not k.startswith('_') and not callable(v):
+                    cfg[k] = v
+        return cfg
+
+
+class BaselineConfig(TrainConfig):
+    """
+    BaselineConfig - COMPLETELY UNWEIGHTED CrossEntropy for clean diagnostics.
+    
+    Oracle Analysis (from previous thread):
+    - Model predicts almost everything as vulnerable (Recall ~95%, Precision ~45%)
+    - Train AUC reaches 0.80 while Val AUC stays ~0.58 → OVERFITTING
+    - Suspected causes: class weights, focal loss, label smoothing forcing positives
+    
+    Goals:
+    1. Use UNWEIGHTED CrossEntropyLoss (no class weights at all!)
+    2. Disable all regularization tricks to see clean learning
+    3. If model still predicts all 1s, issue is in data representation
+    4. If model learns balanced predictions, issue was in loss weighting
+    
+    Key Changes:
+    - use_class_weights: False (NEW FLAG - completely disable class weights)
+    - NO label smoothing
+    - NO focal loss
+    - NO token augmentation
+    - Moderate dropout to prevent pure overfitting
+    """
+    
+    # --- NEW: Disable class weights entirely ---
+    use_class_weights: bool = False  # NEW! Will use unweighted CrossEntropyLoss
+    
+    # --- Model Capacity (moderate) ---
+    embed_dim: int = 128
+    hidden_dim: int = 160              # Moderate capacity
+    num_layers: int = 2                # Stacked BiGRU
+    bidirectional: bool = True
+    
+    # Multi-head attention pooling
+    use_multihead_attention: bool = True
+    num_attention_heads: int = 4
+    attention_dropout: float = 0.15
+    
+    # --- Dropout MODERATE (prevent overfitting but allow learning) ---
+    embedding_dropout: float = 0.15
+    rnn_dropout: float = 0.2
+    classifier_dropout: float = 0.3
+    
+    # Vuln features (disabled for devign_final which has no features)
+    use_vuln_features: bool = False
+    vuln_feature_hidden_dim: int = 64
+    vuln_feature_dropout: float = 0.2
+    
+    # --- NO label smoothing ---
+    label_smoothing: float = 0.0
+    label_smoothing_warmup_epochs: int = 0
+    
+    # --- NO token augmentation ---
+    use_token_augmentation: bool = False
+    token_dropout_prob: float = 0.0
+    token_mask_prob: float = 0.0
+    mask_token_id: int = 1
+    
+    # --- LOW weight decay ---
+    weight_decay: float = 1e-4
+    
+    # --- Class weighting: DISABLED ---
+    use_precision_focused_weight: bool = False
+    neg_weight_boost: float = 1.0
+    pos_weight_reduce: float = 1.0
+    
+    # --- NO Focal Loss ---
+    use_focal_weight: bool = False
+    use_focal_alpha: bool = False
+    focal_gamma: float = 0.0
+    
+    # --- LayerNorm enabled ---
+    use_layer_norm: bool = True
+    
+    # --- Learning rate ---
+    learning_rate: float = 5e-4
+    max_lr: float = 1.5e-3
+    scheduler_type: str = 'plateau'
+    scheduler_patience: int = 3
+    scheduler_factor: float = 0.5
+    scheduler_min_lr: float = 1e-6
+    
+    # --- Training duration ---
+    max_epochs: int = 30
+    patience: int = 8
+    min_delta: float = 1e-4
+    
+    # --- Early stopping on VAL_AUC ---
+    early_stopping_metric: str = 'val_auc'
+    
+    # --- NO SWA ---
+    use_swa: bool = False
+    
+    # --- NO ensemble ---
+    ensemble_size: int = 1
+    use_diverse_ensemble: bool = False
+    
+    # --- Threshold: simple F1 optimization ---
+    use_optimal_threshold: bool = True
+    threshold_min: float = 0.2
+    threshold_max: float = 0.8
+    threshold_step: float = 0.01
+    threshold_objective: str = 'f1'
+    min_recall_constraint: float = 0.60
+    min_precision_constraint: float = 0.50
+    
+    # --- NO fine-tuning tail ---
+    use_finetune_tail: bool = False
+    
+    # --- Batch size ---
+    batch_size: int = 128
+    accumulation_steps: int = 1
+    num_workers: int = 0  # 0 for Windows multiprocessing compatibility
+    grad_clip: float = 1.0
+    max_seq_length: int = 512
+    use_amp: bool = True
+    use_packed_sequences: bool = True
+    save_every: int = 5
+    
+    # Segment-aware features (keep for now)
+    use_segment_embedding: bool = True
+    use_position_bias: bool = True
+    
+    def to_dict(self) -> Dict:
+        """Export config to plain dict."""
+        cfg: Dict[str, Any] = {}
+        for cls in reversed(self.__class__.mro()):
+            if cls is object:
+                continue
+            for k, v in cls.__dict__.items():
+                if not k.startswith('_') and not callable(v):
+                    cfg[k] = v
+        return cfg
+
+
+class AntiOverfitConfig(BaselineConfig):
+    """
+    AntiOverfitConfig - Fix overfitting issue (Train AUC 0.80 vs Val AUC 0.66).
+    
+    Diagnostic results:
+    - Train AUC: 0.80, Val AUC: 0.66 → OVERFITTING confirmed
+    - Pipeline OK: PAD/UNK stats normal, pack_padded_sequence works
+    - Overfit test: 97.5% acc on 200 samples → model CAN learn
+    - max_length=512 OK: P95=412, covers 99% samples
+    
+    Key changes from BaselineConfig:
+    1. HIGHER dropout: 0.4-0.5 (aggressive regularization)
+    2. ENABLE class weights: boost neg, reduce pos (fix precision)
+    3. STRONGER weight decay: 5e-3
+    4. EARLY stopping: patience=4, stop at epoch 6-7
+    5. LOWER learning rate: more stable convergence
+    """
+    
+    # --- Dropout AGGRESSIVE (fix overfitting) ---
+    embedding_dropout: float = 0.3     # UP from 0.15
+    rnn_dropout: float = 0.4           # UP from 0.2
+    classifier_dropout: float = 0.5    # UP from 0.3
+    attention_dropout: float = 0.25    # UP from 0.15
+    
+    # --- Class weights ENABLED (fix precision) ---
+    use_class_weights: bool = True     # Enable weighted loss
+    use_precision_focused_weight: bool = True
+    neg_weight_boost: float = 1.25     # Boost negative class 25%
+    pos_weight_reduce: float = 0.80    # Reduce positive class 20%
+    
+    # --- Weight decay STRONGER ---
+    weight_decay: float = 5e-3         # UP from 1e-4
+    
+    # --- Learning rate LOWER ---
+    learning_rate: float = 3e-4        # DOWN from 5e-4
+    max_lr: float = 1.0e-3             # DOWN from 1.5e-3
+    
+    # --- Early stopping AGGRESSIVE ---
+    max_epochs: int = 20               # DOWN from 30
+    patience: int = 4                  # DOWN from 8
+    min_delta: float = 5e-4            # UP from 1e-4
+    
+    # --- Label smoothing LIGHT ---
+    label_smoothing: float = 0.05      # Help with noisy labels
+    label_smoothing_warmup_epochs: int = 10
+    
+    # --- Scheduler tuned for early stopping ---
+    scheduler_patience: int = 2        # Reduce LR faster
+    
+    def to_dict(self) -> Dict:
+        """Export config to plain dict."""
+        cfg: Dict[str, Any] = {}
+        for cls in reversed(self.__class__.mro()):
+            if cls is object:
+                continue
+            for k, v in cls.__dict__.items():
+                if not k.startswith('_') and not callable(v):
+                    cfg[k] = v
+        return cfg
+
+
+class StrongWeightsConfig(BaselineConfig):
+    """
+    StrongWeightsConfig - Fix model predicting 93% positive.
+    
+    Analysis of AntiOverfitConfig results:
+    - Test: AUC=0.61, F1=0.64, Precision=0.49, Recall=0.93
+    - Model predicts almost everything as vulnerable (FP=1216, TN=258)
+    - Class weights (neg=1.25, pos=0.95) were TOO WEAK
+    
+    Key changes (v3 - BALANCED class weights):
+    1. BALANCED class weights: neg=1.0x, pos=1.18x (ratio=11820/9988)
+       → Compensates for class imbalance without distorting probabilities
+    2. MODERATE threshold: search in [0.25, 0.70] 
+       → Was too high at [0.5, 0.8] - model probs never reached that
+    3. DISABLE Focal Loss - combined with strong weights was too much
+    4. Lower dropout (model was underfitting on val)
+    """
+    
+    # --- Dropout MODERATE (avoid underfitting) ---
+    embedding_dropout: float = 0.2
+    rnn_dropout: float = 0.25
+    classifier_dropout: float = 0.35
+    attention_dropout: float = 0.15
+    
+    # --- Class weights to REDUCE FALSE POSITIVES ---
+    # Model predicts 90% positive → need to penalize FP more
+    # Higher neg weight = penalize misclassifying neg as pos (FP)
+    use_class_weights: bool = True
+    use_precision_focused_weight: bool = True   # Enable precision-focused weighting
+    neg_weight_boost: float = 2.0               # UP: penalize FP more
+    pos_weight_reduce: float = 0.6              # DOWN: allow missing some positives
+    
+    # --- Focal Loss ENABLED to sharpen predictions ---
+    use_focal_weight: bool = True      # ENABLED: force confident predictions
+    focal_gamma: float = 2.0           # Standard gamma
+    
+    # --- Weight decay ---
+    weight_decay: float = 1e-3
+    
+    # --- Learning rate ---
+    learning_rate: float = 3e-4
+    max_lr: float = 1.0e-3
+    
+    # --- Training ---
+    max_epochs: int = 25
+    patience: int = 5
+    min_delta: float = 3e-4
+    
+    # --- Label smoothing OFF for sharper decision boundary ---
+    label_smoothing: float = 0.0
+    label_smoothing_warmup_epochs: int = 0
+    
+    # --- Threshold: search in MODERATE range (v2: smoothed) ---
+    threshold_min: float = 0.30        # UP from 0.25 → more stable
+    threshold_max: float = 0.60        # DOWN from 0.70 → narrower range
+    threshold_step: float = 0.02       # UP from 0.01 → fewer threshold candidates
+    threshold_objective: str = 'f1'
+    threshold_ema_alpha: float = 0.3   # NEW: EMA smoothing factor (0.3 = slow adaptation)
+    
+    # --- Scheduler ---
+    scheduler_patience: int = 3
+    
+    # --- Sequence length optimized for actual data ---
+    # Average seq length = 148 tokens, padding to 512 wastes 70%
+    # Use 256 to cover 95%+ of sequences while reducing padding overhead
+    max_seq_length: int = 256
+    
+    def to_dict(self) -> Dict:
+        """Export config to plain dict."""
+        cfg: Dict[str, Any] = {}
+        for cls in reversed(self.__class__.mro()):
+            if cls is object:
+                continue
+            for k, v in cls.__dict__.items():
+                if not k.startswith('_') and not callable(v):
+                    cfg[k] = v
+        return cfg
+
+
+class BalancedConfig(BaselineConfig):
+    """
+    BalancedConfig - Alternative approach: use VERY HIGH threshold.
+    
+    Instead of changing class weights dramatically, this approach:
+    1. Keep moderate class weights (neg=1.5x, pos=0.8x)
+    2. Use VERY HIGH threshold (0.7-0.85) to reduce false positives
+    3. Early stopping on val_auc (not val_f1)
+    
+    Rationale: If model outputs probabilities that are well-calibrated,
+    a high threshold should reject uncertain predictions (reduce FP).
+    """
+    
+    # --- Dropout MODERATE ---
+    embedding_dropout: float = 0.2
+    rnn_dropout: float = 0.25
+    classifier_dropout: float = 0.35
+    attention_dropout: float = 0.15
+    
+    # --- Class weights MODERATE ---
+    use_class_weights: bool = True
+    use_precision_focused_weight: bool = True
+    neg_weight_boost: float = 1.5      # Moderate boost
+    pos_weight_reduce: float = 0.80
+    
+    # --- NO Focal Loss ---
+    use_focal_weight: bool = False
+    
+    # --- Weight decay ---
+    weight_decay: float = 1e-3
+    
+    # --- Learning rate ---
+    learning_rate: float = 3e-4
+    max_lr: float = 1.0e-3
+    
+    # --- Training ---
+    max_epochs: int = 25
+    patience: int = 5
+    min_delta: float = 3e-4
+    
+    # --- Label smoothing OFF ---
+    label_smoothing: float = 0.0
+    label_smoothing_warmup_epochs: int = 0
+    
+    # --- Threshold: VERY HIGH range to reduce FP ---
+    threshold_min: float = 0.60        # Very high
+    threshold_max: float = 0.85
+    threshold_step: float = 0.01
+    threshold_objective: str = 'f1'
+    
+    # --- Early stopping on val_auc ---
+    early_stopping_metric: str = 'val_auc'
+    
+    # --- Scheduler ---
+    scheduler_patience: int = 3
+    
+    def to_dict(self) -> Dict:
+        """Export config to plain dict."""
+        cfg: Dict[str, Any] = {}
+        for cls in reversed(self.__class__.mro()):
+            if cls is object:
+                continue
+            for k, v in cls.__dict__.items():
+                if not k.startswith('_') and not callable(v):
+                    cfg[k] = v
+        return cfg
+
+
+class DiagnosticConfig(TrainConfig):
+    """
+    DiagnosticConfig - MINIMAL REGULARIZATION to diagnose signal strength.
+    
+    Oracle Analysis:
+    - Train AUC ~0.65 = model CAN'T learn the signal, not just overfitting
+    - Heavy regularization (V6) masked the real problem: weak/missing signal
+    
+    Goals:
+    1. Remove all regularization to see maximum train capacity
+    2. If train AUC >> 0.70, problem is overfitting → add regularization
+    3. If train AUC still ~0.65, problem is data/representation → need better features
+    
+    Key Changes:
+    - MINIMAL dropout (0.1-0.15)
+    - NO label smoothing
+    - LOW weight decay (1e-4)
+    - NO token augmentation
+    - Moderate model capacity (hidden=160)
+    - Track train vs val gap carefully
+    """
+    
+    # --- Model Capacity (moderate) ---
+    embed_dim: int = 128
+    hidden_dim: int = 160              # Moderate capacity
+    num_layers: int = 2                # Stacked BiGRU
+    bidirectional: bool = True
+    
+    # Multi-head attention pooling
+    use_multihead_attention: bool = True
+    num_attention_heads: int = 4
+    attention_dropout: float = 0.1     # MINIMAL
+    
+    # --- Dropout MINIMAL (to see if model can overfit = learn signal) ---
+    embedding_dropout: float = 0.1     # DOWN from 0.25
+    rnn_dropout: float = 0.15          # DOWN from 0.40
+    classifier_dropout: float = 0.15   # DOWN from 0.50
+    
+    # Vuln features (disabled for devign_final which has no features)
+    use_vuln_features: bool = False
+    vuln_feature_hidden_dim: int = 64
+    vuln_feature_dropout: float = 0.1
+    
+    # --- NO label smoothing ---
+    label_smoothing: float = 0.0
+    label_smoothing_warmup_epochs: int = 0
+    
+    # --- NO token augmentation ---
+    use_token_augmentation: bool = False
+    token_dropout_prob: float = 0.0
+    token_mask_prob: float = 0.0
+    mask_token_id: int = 1
+    
+    # --- LOW weight decay ---
+    weight_decay: float = 1e-4         # DOWN from 2e-2
+    
+    # --- Class weighting: simple pos_weight based on imbalance ---
+    use_precision_focused_weight: bool = False
+    neg_weight_boost: float = 1.0
+    pos_weight_reduce: float = 1.0
+    
+    # --- NO Focal Loss ---
+    use_focal_weight: bool = False
+    use_focal_alpha: bool = False
+    focal_gamma: float = 0.0
+    
+    # --- LayerNorm enabled ---
+    use_layer_norm: bool = True
+    
+    # --- Learning rate ---
+    learning_rate: float = 5e-4        # Standard
+    max_lr: float = 1.5e-3
+    scheduler_type: str = 'plateau'
+    scheduler_patience: int = 3
+    scheduler_factor: float = 0.5
+    scheduler_min_lr: float = 1e-6
+    
+    # --- Training duration (longer to see full learning curve) ---
+    max_epochs: int = 30
+    patience: int = 8                  # More patient to see overfitting pattern
+    min_delta: float = 1e-4
+    
+    # --- Early stopping on VAL_AUC (Oracle recommendation) ---
+    early_stopping_metric: str = 'val_auc'  # Track ranking quality
+    
+    # --- NO SWA (simpler diagnostic) ---
+    use_swa: bool = False
+    
+    # --- NO ensemble ---
+    ensemble_size: int = 1
+    use_diverse_ensemble: bool = False
+    
+    # --- Threshold: simple F1 optimization ---
+    use_optimal_threshold: bool = True
+    threshold_min: float = 0.2
+    threshold_max: float = 0.8
+    threshold_step: float = 0.01
+    threshold_objective: str = 'f1'
+    min_recall_constraint: float = 0.70
+    min_precision_constraint: float = 0.50
+    
+    # --- NO fine-tuning tail ---
+    use_finetune_tail: bool = False
+    
+    # --- Batch size ---
+    batch_size: int = 128
+    accumulation_steps: int = 1
+    num_workers: int = 2
+    grad_clip: float = 1.0
+    max_seq_length: int = 512
+    use_amp: bool = True
+    use_packed_sequences: bool = True
+    save_every: int = 5
+    
+    def to_dict(self) -> Dict:
+        """Export config to plain dict."""
+        cfg: Dict[str, Any] = {}
+        for cls in reversed(self.__class__.mro()):
+            if cls is object:
+                continue
+            for k, v in cls.__dict__.items():
+                if not k.startswith('_') and not callable(v):
+                    cfg[k] = v
+        return cfg
+
+
+# Use DiagnosticConfig to understand signal strength
+# If train AUC >> 0.70: model can learn → overfitting problem
+# If train AUC ~0.65: weak signal → need better representation/preprocessing
+# config = DiagnosticConfig()
+
+
+class SegmentAwareConfig(DiagnosticConfig):
+    """
+    Segment-Aware Configuration with Oracle improvements #1 and #2.
+    
+    Based on Oracle analysis:
+    - LR baseline AUC = 0.68, BiGRU AUC = 0.66 → Token signal is WEAK
+    - Need to help model focus on anchor (statement after [SEP])
+    
+    Improvements:
+    1. Segment Embedding: distinguish anchor (after [SEP]) vs context (before [SEP])
+       Expected: +0.01 to +0.03 AUC
+    2. Position-Biased Attention: boost anchor tokens, penalize distant context
+       Expected: +0.02 to +0.05 AUC
+    
+    Combined expected improvement: +0.03 to +0.07 AUC (0.66 → 0.69-0.73)
+    """
+    
+    # --- ORACLE IMPROVEMENT #1: Segment Embedding ---
+    use_segment_embedding: bool = True
+    
+    # --- ORACLE IMPROVEMENT #2: Position-Biased Attention ---
+    use_position_bias: bool = True
+    
+    # Use multi-head attention with position bias
+    use_multihead_attention: bool = True
+    num_attention_heads: int = 4
+    attention_dropout: float = 0.1
+    
+    # --- Model Capacity (moderate) ---
+    embed_dim: int = 128
+    hidden_dim: int = 160
+    num_layers: int = 2
+    bidirectional: bool = True
+    
+    # --- Dropout (minimal for diagnostics) ---
+    embedding_dropout: float = 0.1
+    rnn_dropout: float = 0.15
+    classifier_dropout: float = 0.2
+    
+    # --- Training ---
+    learning_rate: float = 5e-4
+    weight_decay: float = 1e-4
+    max_epochs: int = 30
+    patience: int = 8
+    min_delta: float = 1e-4
+    
+    # --- Early stopping on AUC ---
+    early_stopping_metric: str = 'val_auc'
+    
+    # --- No ensemble for faster iteration ---
+    ensemble_size: int = 1
+    use_diverse_ensemble: bool = False
+    
+    # --- Threshold optimization ---
+    use_optimal_threshold: bool = True
+    threshold_min: float = 0.3
+    threshold_max: float = 0.7
+    threshold_step: float = 0.01
+    threshold_objective: str = 'f1'
+    
+    # --- Other settings ---
+    use_layer_norm: bool = True
+    use_token_augmentation: bool = False  # Disabled for clean signal
+    use_swa: bool = False  # Disabled for faster iteration
+    use_finetune_tail: bool = False
+    
+    batch_size: int = 128
+    accumulation_steps: int = 1
+    grad_clip: float = 1.0
+    max_seq_length: int = 512
+    use_amp: bool = True
+    use_packed_sequences: bool = True
+    
+    def to_dict(self) -> Dict:
+        """Export config to plain dict."""
+        cfg: Dict[str, Any] = {}
+        for cls in reversed(self.__class__.mro()):
+            if cls is object:
+                continue
+            for k, v in cls.__dict__.items():
+                if not k.startswith('_') and not callable(v):
+                    cfg[k] = v
+        return cfg
+
+
+# StrongWeightsConfig: Fix model predicting 93% positive
+# - neg_weight_boost = 2.5x (was 1.25x)
+# - pos_weight_reduce = 0.5x (was 0.8x)  
+# - Focal Loss enabled (gamma=2.0)
+# - Higher threshold search [0.5, 0.8]
+config = StrongWeightsConfig()
 
 # %% [markdown]
 # ## 3. Dataset & DataLoader
 
 # %%
 class DevignDataset(Dataset):
-    """Load preprocessed single .npz file (tokens + vuln features)"""
+    """Load preprocessed single .npz file (tokens + vuln features)
+    
+    Enhanced with segment-aware features:
+    - token_type_ids: 0 for context (before SEP), 1 for anchor (after SEP)
+    - sep_pos: position of [SEP] token
+    """
+    
+    SEP_TOKEN_ID = 4  # [SEP] token ID from vocab
     
     def __init__(self, npz_path: str, max_seq_length: int = 512, load_vuln_features: bool = True, vuln_feature_dim: int = 25):
         self.max_seq_length = max_seq_length
@@ -1217,6 +1908,22 @@ class DevignDataset(Dataset):
                     if len(self.vuln_features) != len(self.labels):
                         self.vuln_features = None
     
+    def _find_sep_position(self, input_ids: np.ndarray) -> int:
+        """Find position of [SEP] token. Returns last valid position if not found."""
+        sep_positions = np.where(input_ids == self.SEP_TOKEN_ID)[0]
+        if len(sep_positions) > 0:
+            return int(sep_positions[0])  # First SEP
+        # Fallback: assume anchor starts at 80% of sequence
+        non_pad = np.sum(input_ids != 0)
+        return int(non_pad * 0.8)
+    
+    def _create_token_type_ids(self, input_ids: np.ndarray, sep_pos: int) -> np.ndarray:
+        """Create segment IDs: 0 for context (before SEP), 1 for anchor (after SEP)."""
+        token_type_ids = np.zeros(len(input_ids), dtype=np.int64)
+        # Everything after SEP is anchor (segment 1)
+        token_type_ids[sep_pos + 1:] = 1
+        return token_type_ids
+    
     def __len__(self) -> int:
         return len(self.labels)
     
@@ -1227,10 +1934,18 @@ class DevignDataset(Dataset):
         # Truncate to max_seq_length
         input_ids = raw_ids[:self.max_seq_length]
         
+        # Find SEP position BEFORE padding
+        sep_pos = self._find_sep_position(input_ids)
+        sep_pos = min(sep_pos, self.max_seq_length - 1)  # Clamp to valid range
+        
+        # Create token_type_ids BEFORE padding
+        token_type_ids = self._create_token_type_ids(input_ids, sep_pos)
+        
         # Pad if needed
         padding_length = self.max_seq_length - len(input_ids)
         if padding_length > 0:
             input_ids = np.pad(input_ids, (0, padding_length), constant_values=0)
+            token_type_ids = np.pad(token_type_ids, (0, padding_length), constant_values=0)
         
         # Attention mask (1 for real tokens, 0 for padding)
         if self.attention_mask is not None:
@@ -1253,6 +1968,8 @@ class DevignDataset(Dataset):
         item = {
             'input_ids': torch.tensor(input_ids, dtype=torch.long),
             'attention_mask': torch.tensor(attention_mask, dtype=torch.float),
+            'token_type_ids': torch.tensor(token_type_ids, dtype=torch.long),
+            'sep_pos': torch.tensor(sep_pos, dtype=torch.long),
             'labels': torch.tensor(self.labels[idx], dtype=torch.long),
             'lengths': torch.tensor(orig_len, dtype=torch.long)
         }
@@ -1328,6 +2045,176 @@ print(f"Class: neg={np.sum(train_labels==0)}, pos={np.sum(train_labels==1)}")
 # ## 4. Hybrid BiGRU Model with V2 Features
 
 # %%
+# ============== SEGMENT-AWARE IMPROVEMENTS (Oracle Recommendations) ==============
+
+class SegmentEmbedding(nn.Module):
+    """
+    Learned segment embeddings to distinguish anchor vs context.
+    Token after [SEP] is anchor (segment=1), before is context (segment=0).
+    
+    Oracle Analysis: Expected +0.01 → +0.03 AUC improvement.
+    """
+    def __init__(self, embed_dim: int):
+        super().__init__()
+        self.segment_embed = nn.Embedding(2, embed_dim)
+        
+    def forward(self, embeddings: torch.Tensor, token_type_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            embeddings: [B, L, E] token embeddings
+            token_type_ids: [B, L] segment ids (0=context, 1=anchor)
+        Returns:
+            [B, L, E] embeddings + segment embeddings
+        """
+        return embeddings + self.segment_embed(token_type_ids)
+
+
+class PositionBiasAttention(nn.Module):
+    """
+    Position-weighted attention with learnable bias based on distance to [SEP].
+    Tokens near anchor get higher attention, distant context gets penalized.
+    
+    Oracle Analysis: Expected +0.02 → +0.05 AUC improvement.
+    
+    Formula:
+        d_t = position - sep_pos
+        b_t = -γ_ctx * max(0, -d_t) - γ_anch * max(0, d_t) + bonus * I[d_t > 0]
+        attention = softmax(score + b_t)
+    """
+    def __init__(self, hidden_dim: int, learnable: bool = True):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        
+        # Attention scoring layers
+        self.W = nn.Linear(hidden_dim, hidden_dim)
+        self.v = nn.Linear(hidden_dim, 1, bias=False)
+        
+        # Position bias parameters (learnable)
+        if learnable:
+            self.gamma_ctx = nn.Parameter(torch.tensor(0.02))   # Penalize distant context
+            self.gamma_anch = nn.Parameter(torch.tensor(0.005)) # Mild penalty for distant anchor
+            self.anchor_bonus = nn.Parameter(torch.tensor(0.3)) # Boost anchor tokens
+        else:
+            self.register_buffer('gamma_ctx', torch.tensor(0.03))
+            self.register_buffer('gamma_anch', torch.tensor(0.01))
+            self.register_buffer('anchor_bonus', torch.tensor(0.5))
+        
+        self.dropout = nn.Dropout(0.1)
+    
+    def forward(self, 
+                rnn_outputs: torch.Tensor, 
+                attention_mask: torch.Tensor,
+                sep_pos: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            rnn_outputs: [B, L, D] BiGRU outputs
+            attention_mask: [B, L] (1=keep, 0=pad)
+            sep_pos: [B] position of [SEP] token for each sample
+        Returns:
+            context: [B, D] attention-weighted context vector
+        """
+        B, L, D = rnn_outputs.shape
+        device = rnn_outputs.device
+        
+        # Compute attention scores
+        scores = self.v(torch.tanh(self.W(rnn_outputs))).squeeze(-1)  # [B, L]
+        
+        # Compute position-based bias
+        positions = torch.arange(L, device=device).unsqueeze(0).expand(B, -1)  # [B, L]
+        sep_pos_expanded = sep_pos.unsqueeze(1)  # [B, 1]
+        
+        # Distance from SEP (negative = context, positive = anchor)
+        distance = positions - sep_pos_expanded  # [B, L]
+        
+        # Context penalty (for tokens before SEP)
+        ctx_penalty = -self.gamma_ctx * torch.clamp(-distance, min=0).float()
+        
+        # Anchor penalty (mild, for tokens far after SEP)
+        anch_penalty = -self.gamma_anch * torch.clamp(distance, min=0).float()
+        
+        # Anchor bonus (boost all anchor tokens)
+        is_anchor = (distance > 0).float()
+        bonus = self.anchor_bonus * is_anchor
+        
+        # Combined position bias
+        position_bias = ctx_penalty + anch_penalty + bonus  # [B, L]
+        
+        # Add bias to attention scores
+        scores = scores + position_bias
+        
+        # Mask padding
+        scores = scores.masked_fill(attention_mask == 0, -1e9)
+        
+        # Softmax attention weights
+        attn_weights = F.softmax(scores, dim=1)  # [B, L]
+        attn_weights = self.dropout(attn_weights)
+        
+        # Weighted sum
+        context = torch.sum(rnn_outputs * attn_weights.unsqueeze(-1), dim=1)  # [B, D]
+        
+        return context
+
+
+class MultiHeadPositionBiasAttention(nn.Module):
+    """
+    Multi-head attention pooling with position bias for [SEP].
+    Combines multi-head attention with position-based weighting.
+    """
+    def __init__(self, input_dim: int, num_heads: int = 4, dropout: float = 0.1):
+        super().__init__()
+        self.input_dim = input_dim
+        self.num_heads = num_heads
+        
+        self.query = nn.Parameter(torch.randn(1, 1, input_dim))
+        self.mha = nn.MultiheadAttention(
+            embed_dim=input_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        
+        # Position bias parameters
+        self.gamma_ctx = nn.Parameter(torch.tensor(0.02))
+        self.gamma_anch = nn.Parameter(torch.tensor(0.005))
+        self.anchor_bonus = nn.Parameter(torch.tensor(0.3))
+        
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, rnn_outputs: torch.Tensor, attention_mask: torch.Tensor, sep_pos: torch.Tensor):
+        B, L, D = rnn_outputs.shape
+        device = rnn_outputs.device
+        
+        # Compute position bias
+        positions = torch.arange(L, device=device).unsqueeze(0).expand(B, -1)
+        distance = positions - sep_pos.unsqueeze(1)
+        
+        ctx_penalty = -self.gamma_ctx * torch.clamp(-distance, min=0).float()
+        anch_penalty = -self.gamma_anch * torch.clamp(distance, min=0).float()
+        bonus = self.anchor_bonus * (distance > 0).float()
+        position_bias = ctx_penalty + anch_penalty + bonus
+        
+        # Create attention bias mask for MHA
+        # MHA expects attn_mask of shape [B*num_heads, 1, L] for additive bias
+        # We use key_padding_mask for padding and add position bias to values
+        
+        # Scale RNN outputs by position importance (soft gating)
+        position_weight = torch.sigmoid(position_bias).unsqueeze(-1)  # [B, L, 1]
+        weighted_outputs = rnn_outputs * (0.5 + position_weight)  # Scale: 0.5 to 1.5
+        
+        query = self.query.expand(B, -1, -1)
+        key_padding_mask = ~attention_mask.bool()
+        
+        attn_output, _ = self.mha(
+            query, weighted_outputs, weighted_outputs,
+            key_padding_mask=key_padding_mask,
+            need_weights=False,
+        )
+        
+        context = attn_output.squeeze(1)
+        context = self.dropout(context)
+        return context
+
+
 class MultiHeadSelfAttentionPooling(nn.Module):
     """
     Multi-head self-attention pooling over BiGRU outputs.
@@ -1390,6 +2277,12 @@ class ImprovedHybridBiGRUVulnDetector(nn.Module):
         self.token_mask_prob = getattr(config, 'token_mask_prob', 0.05)
         self.mask_token_id = getattr(config, 'mask_token_id', 1)  # UNK token
         
+        # Segment-aware encoding (Oracle improvement #1)
+        self.use_segment_embedding = getattr(config, 'use_segment_embedding', False)
+        
+        # Position-weighted attention (Oracle improvement #2)
+        self.use_position_bias = getattr(config, 'use_position_bias', False)
+        
         # Embedding
         self.embedding = nn.Embedding(
             config.vocab_size, 
@@ -1398,6 +2291,10 @@ class ImprovedHybridBiGRUVulnDetector(nn.Module):
         )
         embed_drop_rate = getattr(config, 'embedding_dropout', 0.15)
         self.embed_dropout = nn.Dropout(embed_drop_rate)
+        
+        # Segment embedding (adds +0.01 to +0.03 AUC per Oracle)
+        if self.use_segment_embedding:
+            self.segment_embedding = SegmentEmbedding(config.embed_dim)
         
         # BiGRU
         self.gru = nn.GRU(
@@ -1411,9 +2308,23 @@ class ImprovedHybridBiGRUVulnDetector(nn.Module):
         
         self.rnn_out_dim = config.hidden_dim * (2 if config.bidirectional else 1)
         
-        # Attention mechanism (configurable: additive or multi-head)
+        # Attention mechanism (configurable: additive, multi-head, or position-biased)
         self.use_multihead_attention = getattr(config, 'use_multihead_attention', False)
-        if self.use_multihead_attention:
+        
+        if self.use_position_bias:
+            # Position-biased attention (Oracle improvement #2)
+            if self.use_multihead_attention:
+                self.attention = MultiHeadPositionBiasAttention(
+                    input_dim=self.rnn_out_dim,
+                    num_heads=getattr(config, 'num_attention_heads', 4),
+                    dropout=getattr(config, 'attention_dropout', 0.1),
+                )
+            else:
+                self.attention = PositionBiasAttention(
+                    hidden_dim=self.rnn_out_dim,
+                    learnable=True,
+                )
+        elif self.use_multihead_attention:
             self.attention = MultiHeadSelfAttentionPooling(
                 input_dim=self.rnn_out_dim,
                 num_heads=getattr(config, 'num_attention_heads', 4),
@@ -1487,13 +2398,16 @@ class ImprovedHybridBiGRUVulnDetector(nn.Module):
         
         return augmented
         
-    def forward(self, input_ids, attention_mask, vuln_features=None, lengths=None):
+    def forward(self, input_ids, attention_mask, vuln_features=None, lengths=None, 
+                token_type_ids=None, sep_pos=None):
         """
         Args:
             input_ids: [B, L]
             attention_mask: [B, L]
             vuln_features: [B, F] or None
             lengths: [B] actual (non-pad) sequence lengths for packed sequences
+            token_type_ids: [B, L] segment ids (0=context, 1=anchor) - for segment embedding
+            sep_pos: [B] position of [SEP] token - for position bias attention
         """
         B, L = input_ids.shape
         
@@ -1502,6 +2416,11 @@ class ImprovedHybridBiGRUVulnDetector(nn.Module):
         
         # Embedding
         embedded = self.embedding(augmented_ids)  # [B, L, E]
+        
+        # Add segment embedding if enabled (Oracle improvement #1)
+        if self.use_segment_embedding and token_type_ids is not None:
+            embedded = self.segment_embedding(embedded, token_type_ids)
+        
         embedded = self.embed_dropout(embedded)
         
         # GRU with optional packing
@@ -1521,8 +2440,12 @@ class ImprovedHybridBiGRUVulnDetector(nn.Module):
             # Standard GRU
             rnn_out, _ = self.gru(embedded)  # [B, L, D]
         
-        # Attention (handles both additive and multi-head)
-        if self.use_multihead_attention:
+        # Attention (handles additive, multi-head, and position-biased)
+        if self.use_position_bias and sep_pos is not None:
+            # Position-biased attention (Oracle improvement #2)
+            context_vector = self.attention(rnn_out, attention_mask, sep_pos)  # [B, D]
+            context_vector = self.context_dropout(context_vector)
+        elif self.use_multihead_attention:
             context_vector = self.attention(rnn_out, attention_mask)  # [B, D]
         else:
             att_scores = self.attention(rnn_out)  # [B, L, 1]
@@ -1551,8 +2474,72 @@ class ImprovedHybridBiGRUVulnDetector(nn.Module):
         logits = self.classifier(combined)
         return logits
 
-# Initialize model
+
+def load_pretrained_embedding(config, data_dir: str) -> Optional[np.ndarray]:
+    """Load pretrained embedding matrix if available.
+    
+    Args:
+        config: Training configuration
+        data_dir: Directory containing preprocessed data
+        
+    Returns:
+        numpy array of shape [vocab_size, embed_dim] or None
+    """
+    if not getattr(config, 'use_pretrained_embedding', False):
+        return None
+    
+    # Use explicit path if provided, otherwise check multiple locations
+    emb_path = getattr(config, 'embedding_path', '')
+    if not emb_path:
+        # Check multiple possible locations (Kaggle working dir, data_dir, etc.)
+        possible_paths = [
+            os.path.join(data_dir, 'embedding_matrix.npy'),
+            '/kaggle/working/embedding_matrix.npy',
+            os.path.join(os.path.dirname(data_dir), 'embedding_matrix.npy'),
+        ]
+        for p in possible_paths:
+            if os.path.exists(p):
+                emb_path = p
+                break
+        else:
+            emb_path = possible_paths[0]  # Default for error message
+    
+    if os.path.exists(emb_path):
+        pretrained_embedding = np.load(emb_path)
+        print(f"Loaded pretrained embedding: {pretrained_embedding.shape} from {emb_path}")
+        
+        # Validate dimensions
+        expected_vocab = getattr(config, 'vocab_size', 30000)
+        expected_dim = getattr(config, 'embed_dim', 128)
+        if pretrained_embedding.shape[0] != expected_vocab:
+            print(f"Warning: Embedding vocab size {pretrained_embedding.shape[0]} != config vocab_size {expected_vocab}")
+        if pretrained_embedding.shape[1] != expected_dim:
+            print(f"Warning: Embedding dim {pretrained_embedding.shape[1]} != config embed_dim {expected_dim}")
+        
+        return pretrained_embedding
+    else:
+        print(f"Warning: embedding_matrix.npy not found at {emb_path}, using random init")
+        return None
+
+
+# Load pretrained embedding if configured
+pretrained_embedding = load_pretrained_embedding(config, DATA_DIR)
+
+# Initialize model with pretrained embedding
 model = ImprovedHybridBiGRUVulnDetector(config)
+
+# Apply pretrained embedding if available
+if pretrained_embedding is not None:
+    freeze = getattr(config, 'freeze_embedding', False)
+    model.embedding.weight.data.copy_(torch.from_numpy(pretrained_embedding))
+    if freeze:
+        model.embedding.weight.requires_grad = False
+        print(f"Pretrained embedding FROZEN (no gradients)")
+    else:
+        print(f"Pretrained embedding TRAINABLE (with differential LR={getattr(config, 'embedding_lr_scale', 0.1)})")
+else:
+    print(f"Using random embedding initialization")
+
 model.to(DEVICE)
 
 # DataParallel for multi-GPU
@@ -1568,13 +2555,14 @@ print(f"Model: {params:,} params, hidden={config.hidden_dim}, layers={config.num
 # %%
 class EarlyStopping:
     """
-    Early stopping for maximizing metrics (e.g., F1, AUC-ROC).
+    Early stopping that supports both maximize (F1, AUC) and minimize (loss) modes.
     Stops training when metric doesn't improve for `patience` epochs.
     """
-    def __init__(self, patience=7, min_delta=0, verbose=True):
+    def __init__(self, patience=7, min_delta=0, verbose=True, mode='maximize'):
         self.patience = patience
         self.min_delta = min_delta
         self.verbose = verbose
+        self.mode = mode  # 'maximize' for F1/AUC, 'minimize' for loss
         self.counter = 0
         self.best_score = None
         self.early_stop = False
@@ -1585,18 +2573,27 @@ class EarlyStopping:
         if self.best_score is None:
             self.best_score = score
             if self.verbose:
-                print(f"  EarlyStopping: initialized with score={score:.4f}")
-        elif score <= self.best_score + self.min_delta:
-            self.counter += 1
-            if self.verbose:
-                print(f"  EarlyStopping: no improvement ({self.counter}/{self.patience})")
-            if self.counter >= self.patience:
-                self.early_stop = True
+                print(f"  EarlyStopping: initialized with score={score:.4f} (mode={self.mode})")
         else:
-            if self.verbose:
-                print(f"  EarlyStopping: improved {self.best_score:.4f} → {score:.4f}")
-            self.best_score = score
-            self.counter = 0
+            # Check improvement based on mode
+            if self.mode == 'maximize':
+                improved = score > self.best_score + self.min_delta
+            else:  # minimize
+                improved = score < self.best_score - self.min_delta
+            
+            if not improved:
+                self.counter += 1
+                if self.verbose:
+                    print(f"  EarlyStopping: no improvement ({self.counter}/{self.patience})")
+                if self.counter >= self.patience:
+                    self.early_stop = True
+            else:
+                if self.verbose:
+                    print(f"  EarlyStopping: improved {self.best_score:.4f} → {score:.4f}")
+                self.best_score = score
+                self.counter = 0
+        
+        return self.early_stop
             
 class LabelSmoothingCrossEntropy(nn.Module):
     def __init__(self, smoothing=0.1, weight=None):
@@ -1829,14 +2826,21 @@ def evaluate_split(
         labels = batch["labels"].cpu().numpy()
         vuln_feats = batch.get("vuln_features")
         lengths = batch.get("lengths")
+        # Segment-aware features
+        token_type_ids = batch.get("token_type_ids")
+        sep_pos = batch.get("sep_pos")
 
         if vuln_feats is not None:
             vuln_feats = vuln_feats.to(device, non_blocking=True)
         if lengths is not None:
             lengths = lengths.to(device, non_blocking=True)
+        if token_type_ids is not None:
+            token_type_ids = token_type_ids.to(device, non_blocking=True)
+        if sep_pos is not None:
+            sep_pos = sep_pos.to(device, non_blocking=True)
 
         with autocast(device_type='cuda', enabled=use_amp):
-            logits = model(input_ids, attention_mask, vuln_feats, lengths)
+            logits = model(input_ids, attention_mask, vuln_feats, lengths, token_type_ids, sep_pos)
         probs = torch.softmax(logits, dim=-1)[:, 1].detach().cpu().numpy()
 
         all_probs.append(probs)
@@ -1890,7 +2894,7 @@ def evaluate_split(
 def train_epoch(model, loader, optimizer, criterion, scaler, grad_clip, accum_steps, use_amp):
     model.train()
     total_loss = 0
-    all_preds, all_labels = [], []
+    all_probs, all_labels = [], []
     
     optimizer.zero_grad()
     
@@ -1900,9 +2904,12 @@ def train_epoch(model, loader, optimizer, criterion, scaler, grad_clip, accum_st
         labels = batch['labels'].to(DEVICE, non_blocking=True)
         vuln_features = batch['vuln_features'].to(DEVICE, non_blocking=True) if 'vuln_features' in batch else None
         lengths = batch['lengths'].to(DEVICE, non_blocking=True)
+        # Segment-aware features
+        token_type_ids = batch['token_type_ids'].to(DEVICE, non_blocking=True) if 'token_type_ids' in batch else None
+        sep_pos = batch['sep_pos'].to(DEVICE, non_blocking=True) if 'sep_pos' in batch else None
         
         with autocast(device_type='cuda', enabled=use_amp):
-            logits = model(input_ids, attention_mask, vuln_features, lengths)
+            logits = model(input_ids, attention_mask, vuln_features, lengths, token_type_ids, sep_pos)
             loss = criterion(logits, labels)
             loss = loss / accum_steps
             
@@ -1917,21 +2924,24 @@ def train_epoch(model, loader, optimizer, criterion, scaler, grad_clip, accum_st
             
         total_loss += loss.item() * accum_steps
         
-        preds = logits.argmax(dim=1).cpu().numpy()
-        all_preds.extend(preds)
+        probs = torch.softmax(logits.detach(), dim=1)[:, 1].cpu().numpy()
+        all_probs.extend(probs)
         all_labels.extend(labels.cpu().numpy())
         
     avg_loss = total_loss / len(loader)
+    all_probs = np.array(all_probs)
+    all_preds = (all_probs >= 0.5).astype(int)
     f1 = f1_score(all_labels, all_preds, zero_division=0)
     try:
-        auc_roc = roc_auc_score(all_labels, all_preds)
+        auc_roc = roc_auc_score(all_labels, all_probs)
     except:
         auc_roc = 0.5
         
     return {
         'loss': avg_loss,
         'f1': f1,
-        'auc_roc': auc_roc
+        'auc_roc': auc_roc,
+        'all_probs': all_probs
     }
 
 @torch.no_grad()
@@ -1949,9 +2959,12 @@ def evaluate(model, loader, criterion, use_amp, threshold=None, find_threshold=F
         labels = batch['labels'].to(DEVICE, non_blocking=True)
         vuln_features = batch['vuln_features'].to(DEVICE, non_blocking=True) if 'vuln_features' in batch else None
         lengths = batch['lengths'].to(DEVICE, non_blocking=True)
+        # Segment-aware features
+        token_type_ids = batch['token_type_ids'].to(DEVICE, non_blocking=True) if 'token_type_ids' in batch else None
+        sep_pos = batch['sep_pos'].to(DEVICE, non_blocking=True) if 'sep_pos' in batch else None
         
         with autocast(device_type='cuda', enabled=use_amp):
-            logits = model(input_ids, attention_mask, vuln_features, lengths)
+            logits = model(input_ids, attention_mask, vuln_features, lengths, token_type_ids, sep_pos)
             loss = criterion(logits, labels)
             
         total_loss += loss.item()
@@ -2021,9 +3034,28 @@ def set_global_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
-def build_model(config):
-    """Build and initialize model"""
+def build_model(config, pretrained_embedding: Optional[np.ndarray] = None):
+    """Build and initialize model with optional pretrained embedding.
+    
+    Args:
+        config: Training configuration
+        pretrained_embedding: Optional numpy array of shape [vocab_size, embed_dim]
+                              containing pretrained Word2Vec embeddings
+    """
     model = ImprovedHybridBiGRUVulnDetector(config)
+    
+    # Load pretrained embedding if provided
+    if pretrained_embedding is not None:
+        freeze = getattr(config, 'freeze_embedding', False)
+        model.embedding.weight.data.copy_(torch.from_numpy(pretrained_embedding))
+        if freeze:
+            model.embedding.weight.requires_grad = False
+            print(f"Pretrained embedding loaded and FROZEN (no gradients)")
+        else:
+            print(f"Pretrained embedding loaded and TRAINABLE (with differential LR)")
+    else:
+        print(f"Using random embedding initialization")
+    
     model.to(DEVICE)
     if N_GPUS > 1:
         model = nn.DataParallel(model)
@@ -2050,11 +3082,18 @@ def predict_ensemble(models, loader, threshold, use_amp: bool):
         if vuln_features is not None:
             vuln_features = vuln_features.to(DEVICE, non_blocking=True)
         lengths = batch['lengths'].to(DEVICE, non_blocking=True)
+        # Segment-aware features
+        token_type_ids = batch.get('token_type_ids', None)
+        sep_pos = batch.get('sep_pos', None)
+        if token_type_ids is not None:
+            token_type_ids = token_type_ids.to(DEVICE, non_blocking=True)
+        if sep_pos is not None:
+            sep_pos = sep_pos.to(DEVICE, non_blocking=True)
         
         probs_sum = 0.0
         for model in models:
             with autocast(device_type='cuda', enabled=use_amp):
-                logits = model(input_ids, attention_mask, vuln_features, lengths)
+                logits = model(input_ids, attention_mask, vuln_features, lengths, token_type_ids, sep_pos)
                 probs = torch.softmax(logits, dim=1)[:, 1]
             probs_sum += probs
         
@@ -2109,36 +3148,64 @@ def train(model, train_loader, val_loader, config):
     neg_count = np.sum(np.array(all_labels) == 0)
     pos_count = np.sum(np.array(all_labels) == 1)
     
-    # Quick Win 1.1: Precision-focused class weighting
-    use_precision_focused = getattr(config, 'use_precision_focused_weight', False)
-    if use_precision_focused:
-        # Boost negative class weight to reduce false positives (improve precision)
-        neg_boost = getattr(config, 'neg_weight_boost', 1.15)
-        pos_reduce = getattr(config, 'pos_weight_reduce', 0.85)
-        
-        # Compute base ratio and apply precision focus
-        base_ratio = float(neg_count) / float(pos_count)
-        w_neg = neg_boost  # Increase penalty for FP (predicting 1 when actual is 0)
-        w_pos = base_ratio * pos_reduce  # Slightly reduce weight on positives
-        
-        weight = torch.tensor([w_neg, w_pos], dtype=torch.float32, device=DEVICE)
-        print(f"Precision-focused weights: neg={w_neg:.3f}, pos={w_pos:.3f} (boost={neg_boost}, reduce={pos_reduce})")
+    # Check if class weights should be disabled entirely (BaselineConfig)
+    use_class_weights = getattr(config, 'use_class_weights', True)  # Default: use weights
+    
+    if not use_class_weights:
+        # COMPLETELY UNWEIGHTED - for clean baseline diagnostics
+        weight = None  # No class weights at all
+        print(f"Class weights: DISABLED (unweighted CrossEntropyLoss)")
     else:
-        # Original: Slight boost to minority class if imbalanced
-        ratio = float(neg_count) / float(pos_count)
-        weight = torch.tensor([1.0, ratio], dtype=torch.float32, device=DEVICE)
-        print(f"Standard class weights: neg=1.0, pos={ratio:.3f}")
+        # Quick Win 1.1: Precision-focused class weighting
+        use_precision_focused = getattr(config, 'use_precision_focused_weight', False)
+        if use_precision_focused:
+            # Boost negative class weight to reduce false positives (improve precision)
+            neg_boost = getattr(config, 'neg_weight_boost', 1.15)
+            pos_reduce = getattr(config, 'pos_weight_reduce', 0.85)
+            
+            # Compute base ratio and apply precision focus
+            base_ratio = float(neg_count) / float(pos_count)
+            w_neg = neg_boost  # Increase penalty for FP (predicting 1 when actual is 0)
+            w_pos = base_ratio * pos_reduce  # Slightly reduce weight on positives
+            
+            weight = torch.tensor([w_neg, w_pos], dtype=torch.float32, device=DEVICE)
+            print(f"Precision-focused weights: neg={w_neg:.3f}, pos={w_pos:.3f} (boost={neg_boost}, reduce={pos_reduce})")
+        else:
+            # Original: Slight boost to minority class if imbalanced
+            ratio = float(neg_count) / float(pos_count)
+            weight = torch.tensor([1.0, ratio], dtype=torch.float32, device=DEVICE)
+            print(f"Standard class weights: neg=1.0, pos={ratio:.3f}")
     
     # Dynamic label smoothing schedule
     base_smoothing = float(getattr(config, 'label_smoothing', 0.0))
     smoothing_warmup_epochs = int(getattr(config, 'label_smoothing_warmup_epochs', 0))
     
-    # Optimizer
-    optimizer = optim.AdamW(
-        model.parameters(), 
-        lr=config.learning_rate,
-        weight_decay=config.weight_decay
-    )
+    # Optimizer with differential learning rate for embeddings
+    use_pretrained = getattr(config, 'use_pretrained_embedding', False)
+    embedding_lr_scale = getattr(config, 'embedding_lr_scale', 0.1)
+    freeze_embedding = getattr(config, 'freeze_embedding', False)
+    
+    # Get base model (unwrap DataParallel if needed)
+    base_model = model.module if isinstance(model, nn.DataParallel) else model
+    
+    if use_pretrained and not freeze_embedding and embedding_lr_scale != 1.0:
+        # Separate embedding params with lower LR for pretrained embeddings
+        embedding_params = list(base_model.embedding.parameters())
+        embedding_param_ids = {id(p) for p in embedding_params}
+        other_params = [p for p in model.parameters() if id(p) not in embedding_param_ids and p.requires_grad]
+        
+        optimizer = optim.AdamW([
+            {'params': other_params, 'lr': config.learning_rate},
+            {'params': embedding_params, 'lr': config.learning_rate * embedding_lr_scale}
+        ], weight_decay=config.weight_decay)
+        print(f"Differential LR: main={config.learning_rate:.2e}, embedding={config.learning_rate * embedding_lr_scale:.2e} (scale={embedding_lr_scale})")
+    else:
+        # Standard optimizer (all params same LR)
+        optimizer = optim.AdamW(
+            model.parameters(), 
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay
+        )
     
     # Scheduler
     if config.scheduler_type == 'onecycle':
@@ -2188,7 +3255,12 @@ def train(model, train_loader, val_loader, config):
         )
     
     scaler = GradScaler(enabled=config.use_amp)
-    early_stopping = EarlyStopping(config.patience, config.min_delta)
+    
+    # Early stopping with configurable metric
+    early_stopping_metric = getattr(config, 'early_stopping_metric', 'val_f1')
+    early_stopping_mode = 'minimize' if 'loss' in early_stopping_metric else 'maximize'
+    early_stopping = EarlyStopping(config.patience, config.min_delta, mode=early_stopping_mode)
+    print(f"Early stopping: metric={early_stopping_metric}, mode={early_stopping_mode}, patience={config.patience}")
     
     # SWA setup (Stochastic Weight Averaging)
     use_swa = getattr(config, 'use_swa', False)
@@ -2213,8 +3285,14 @@ def train(model, train_loader, val_loader, config):
     
     history = {'train': [], 'val': []}
     best_f1 = 0.0
+    best_auc = 0.0  # Track AUC for fallback checkpoint saving
     best_epoch = 0
     best_threshold_overall = 0.5
+    checkpoint_saved = False  # Track if any checkpoint was saved
+    
+    # EMA smoothing for threshold stability
+    threshold_ema_alpha = getattr(config, 'threshold_ema_alpha', 0.3)
+    smoothed_threshold = 0.5  # Initialize to default
     
     print("\n" + "="*50)
     print(f"Training: batch={config.batch_size}, epochs={config.max_epochs}, AMP={config.use_amp}")
@@ -2287,7 +3365,11 @@ def train(model, train_loader, val_loader, config):
         history['val'].append(val_metrics)
         
         current_lr = optimizer.param_groups[0]['lr']
-        val_t = val_metrics['best_threshold']
+        raw_threshold = val_metrics['best_threshold']
+        
+        # Apply EMA smoothing to threshold for stability
+        smoothed_threshold = threshold_ema_alpha * raw_threshold + (1 - threshold_ema_alpha) * smoothed_threshold
+        val_t = smoothed_threshold  # Use smoothed threshold for logging and saving
         
         loss_type = "focal" if use_focal else f"smooth={current_smoothing:.3f}"
         print(
@@ -2312,11 +3394,25 @@ def train(model, train_loader, val_loader, config):
             # Cosine/OneCycle: step every epoch
             scheduler.step()
         
-        # Save best model (based on F1)
+        # Save best model (based on F1, or AUC as fallback when F1=0)
+        should_save = False
         if val_metrics['f1'] > best_f1:
+            # Primary: save when F1 improves
             best_f1 = val_metrics['f1']
             best_epoch = epoch
             best_threshold_overall = val_t
+            should_save = True
+            print(f"  ★ Best F1={best_f1:.4f}")
+        elif best_f1 == 0.0 and val_metrics['auc_roc'] > best_auc:
+            # Fallback: when F1 is always 0, save based on AUC
+            best_auc = val_metrics['auc_roc']
+            best_epoch = epoch
+            best_threshold_overall = val_t
+            should_save = True
+            print(f"  ★ Best AUC={best_auc:.4f} (F1=0 fallback)")
+        
+        if should_save:
+            checkpoint_saved = True
             
             save_dict = {
                 'epoch': epoch,
@@ -2324,21 +3420,39 @@ def train(model, train_loader, val_loader, config):
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_metrics': val_metrics,
                 'config': config.to_dict(),
-                'best_threshold': best_threshold_overall
+                'best_threshold': best_threshold_overall,
+                'embedding_config': {
+                    'use_pretrained_embedding': getattr(config, 'use_pretrained_embedding', False),
+                    'freeze_embedding': getattr(config, 'freeze_embedding', False),
+                    'embedding_lr_scale': getattr(config, 'embedding_lr_scale', 0.1),
+                }
             }
             torch.save(save_dict, os.path.join(MODEL_DIR, 'best_model.pt'))
-            print(f"  ★ Best F1={best_f1:.4f}")
         
         # Regular checkpoint
         if epoch % config.save_every == 0:
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict(),
-                'best_threshold': val_t
+                'best_threshold': val_t,
+                'config': config.to_dict(),
+                'embedding_config': {
+                    'use_pretrained_embedding': getattr(config, 'use_pretrained_embedding', False),
+                    'freeze_embedding': getattr(config, 'freeze_embedding', False),
+                    'embedding_lr_scale': getattr(config, 'embedding_lr_scale', 0.1),
+                }
             }, os.path.join(MODEL_DIR, f'checkpoint_epoch_{epoch}.pt'))
         
         # Early stopping + optional fine-tuning tail
-        if early_stopping(val_metrics['f1']):
+        # Use configurable metric (val_loss, val_f1, or val_auc)
+        if early_stopping_metric == 'val_loss':
+            es_value = val_metrics['loss']
+        elif early_stopping_metric == 'val_auc':
+            es_value = val_metrics['auc_roc']
+        else:
+            es_value = val_metrics['f1']
+        
+        if early_stopping(es_value):
             if use_finetune_tail and not in_finetune:
                 # Enter fine-tuning tail at low LR instead of stopping immediately
                 in_finetune = True
@@ -2387,7 +3501,12 @@ def train(model, train_loader, val_loader, config):
             'model_state_dict': swa_model.state_dict(),
             'val_metrics': swa_metrics,
             'config': config.to_dict(),
-            'best_threshold': swa_threshold
+            'best_threshold': swa_threshold,
+            'embedding_config': {
+                'use_pretrained_embedding': getattr(config, 'use_pretrained_embedding', False),
+                'freeze_embedding': getattr(config, 'freeze_embedding', False),
+                'embedding_lr_scale': getattr(config, 'embedding_lr_scale', 0.1),
+            }
         }
         torch.save(swa_save_dict, os.path.join(MODEL_DIR, 'swa_model.pt'))
         print(f"[SWA] Saved SWA model to {MODEL_DIR}/swa_model.pt")
@@ -2401,7 +3520,10 @@ def train(model, train_loader, val_loader, config):
             print(f"[SWA] Best model still better: F1={best_f1:.4f} > {swa_metrics['f1']:.4f}")
     
     print(f"\n{'='*50}")
-    print(f"Done! Best F1={best_f1:.4f} at epoch {best_epoch} (T={best_threshold_overall:.2f})")
+    if best_f1 > 0:
+        print(f"Done! Best F1={best_f1:.4f} at epoch {best_epoch} (T={best_threshold_overall:.2f})")
+    else:
+        print(f"Done! Best AUC={best_auc:.4f} at epoch {best_epoch} (T={best_threshold_overall:.2f}) [F1=0]")
     print("="*50)
     
     # Save history (convert numpy types to native Python for JSON serialization)
@@ -2473,16 +3595,21 @@ if USE_ENSEMBLE:
         print(f"{'='*50}\n")
         
         set_global_seed(seed)
-        model = build_model(model_config)
+        model = build_model(model_config, pretrained_embedding=pretrained_embedding)
         
         history, best_threshold, swa_model = train(model, train_loader, val_loader, model_config)
         
-        # Load best checkpoint for this model
-        checkpoint = torch.load(os.path.join(MODEL_DIR, 'best_model.pt'), weights_only=False)
-        if isinstance(model, nn.DataParallel):
-            model.module.load_state_dict(checkpoint['model_state_dict'])
+        # Load best checkpoint for this model (with fallback)
+        best_model_path = os.path.join(MODEL_DIR, 'best_model.pt')
+        if os.path.exists(best_model_path):
+            checkpoint = torch.load(best_model_path, weights_only=False)
+            if isinstance(model, nn.DataParallel):
+                model.module.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                model.load_state_dict(checkpoint['model_state_dict'])
+            print(f"  [Ensemble {i}] Loaded best_model.pt checkpoint")
         else:
-            model.load_state_dict(checkpoint['model_state_dict'])
+            print(f"  [Ensemble {i}] WARNING: best_model.pt not found! Using current model state.")
         
         ensemble_models.append(model)
         
@@ -2559,13 +3686,21 @@ if USE_ENSEMBLE and ensemble_models is not None:
     
 else:
     # ============ SINGLE MODEL EVALUATION ============
-    # Load best model
-    checkpoint = torch.load(os.path.join(MODEL_DIR, 'best_model.pt'), weights_only=False)
+    # Load best model (with fallback if checkpoint wasn't saved)
+    best_model_path = os.path.join(MODEL_DIR, 'best_model.pt')
     
-    if isinstance(model, nn.DataParallel):
-        model.module.load_state_dict(checkpoint['model_state_dict'])
+    if os.path.exists(best_model_path):
+        checkpoint = torch.load(best_model_path, weights_only=False)
+        
+        if isinstance(model, nn.DataParallel):
+            model.module.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        print("Loaded best_model.pt checkpoint")
     else:
-        model.load_state_dict(checkpoint['model_state_dict'])
+        # No checkpoint was saved - use current model state
+        print("WARNING: best_model.pt not found! Using current model state.")
+        print("  (This happens when F1=0 and AUC never improved beyond initial)")
     
     # Evaluate on test set
     criterion = nn.CrossEntropyLoss()
@@ -2645,7 +3780,12 @@ final_export = {
     'test_metrics': test_metrics,
     'best_threshold': best_threshold,
     'timestamp': datetime.now().isoformat(),
-    'model_type': 'HybridBiGRU'
+    'model_type': 'HybridBiGRU',
+    'embedding_config': {
+        'use_pretrained_embedding': getattr(config, 'use_pretrained_embedding', False),
+        'freeze_embedding': getattr(config, 'freeze_embedding', False),
+        'embedding_lr_scale': getattr(config, 'embedding_lr_scale', 0.1),
+    }
 }
 torch.save(final_export, os.path.join(MODEL_DIR, 'bigru_vuln_detector_final.pt'))
 print(f"Model saved to {MODEL_DIR}/bigru_vuln_detector_final.pt")

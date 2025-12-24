@@ -1,3 +1,5 @@
+
+
 # Agents Configuration
 
 ## Git Commit Rules

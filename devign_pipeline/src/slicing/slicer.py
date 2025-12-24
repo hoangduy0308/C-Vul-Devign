@@ -4,6 +4,7 @@ Provides backward/forward slicing based on DFG and CFG,
 with window-based fallback when parsing fails.
 """
 
+from collections import deque
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Set, Dict, Any
 from enum import Enum
@@ -172,19 +173,12 @@ class CodeSlicer:
             control_deps = self._get_control_dependencies(cfg, list(included_lines))
             included_lines.update(control_deps)
         
-        # Iteratively expand (up to max_depth)
-        for _ in range(self.config.max_depth - 1):
-            new_lines = set()
-            
-            if self.config.include_data_deps and dfg is not None:
-                new_lines.update(self._get_data_dependencies(dfg, list(included_lines)))
-            
-            if self.config.include_control_deps and cfg is not None:
-                new_lines.update(self._get_control_dependencies(cfg, list(included_lines)))
-            
-            if not new_lines - included_lines:
-                break
-            included_lines.update(new_lines)
+        # Apply window constraint: only keep lines within window of criterion
+        if self.config.window_size > 0:
+            max_criterion = max(criterion_lines) if criterion_lines else 1
+            min_criterion = min(criterion_lines) if criterion_lines else 1
+            window_min = max(1, min_criterion - self.config.window_size)
+            included_lines = {l for l in included_lines if l >= window_min and l <= max_criterion}
         
         return self._build_slice(code, included_lines, criterion_lines, SliceType.BACKWARD)
     
@@ -225,19 +219,13 @@ class CodeSlicer:
             forward_control = self._get_forward_control_dependencies(cfg, list(included_lines))
             included_lines.update(forward_control)
         
-        # Iteratively expand
-        for _ in range(self.config.max_depth - 1):
-            new_lines = set()
-            
-            if self.config.include_data_deps and dfg is not None:
-                new_lines.update(self._get_forward_data_dependencies(dfg, list(included_lines)))
-            
-            if self.config.include_control_deps and cfg is not None:
-                new_lines.update(self._get_forward_control_dependencies(cfg, list(included_lines)))
-            
-            if not new_lines - included_lines:
-                break
-            included_lines.update(new_lines)
+        # Apply window constraint: only keep lines within window of criterion
+        if self.config.window_size > 0:
+            min_criterion = min(criterion_lines) if criterion_lines else 1
+            max_criterion = max(criterion_lines) if criterion_lines else 1
+            lines_count = len(code.split('\n'))
+            window_max = min(lines_count, max_criterion + self.config.window_size)
+            included_lines = {l for l in included_lines if l >= min_criterion and l <= window_max}
         
         return self._build_slice(code, included_lines, criterion_lines, SliceType.FORWARD)
     
@@ -323,15 +311,19 @@ class CodeSlicer:
         if dfg is None or not dfg.nodes:
             return dep_lines
         
-        # Get all node indices at target lines
         target_node_indices = dfg.get_nodes_for_lines(target_lines)
         visited: Set[int] = set()
         
-        # BFS backward through def-use chains
-        queue = list(target_node_indices)
+        # BFS with depth tracking: (node_idx, depth)
+        queue = deque([(idx, 0) for idx in target_node_indices])
         
         while queue:
-            node_idx = queue.pop(0)
+            node_idx, depth = queue.popleft()
+            
+            # Stop if max depth reached
+            if depth > self.config.max_depth:
+                continue
+                
             if node_idx in visited or node_idx >= len(dfg.nodes):
                 continue
             visited.add(node_idx)
@@ -342,7 +334,7 @@ class CodeSlicer:
             # Find edges pointing TO this node (backward)
             for edge in dfg.edges:
                 if edge.to_idx == node_idx and edge.from_idx not in visited:
-                    queue.append(edge.from_idx)
+                    queue.append((edge.from_idx, depth + 1))
         
         return dep_lines
     
@@ -356,11 +348,16 @@ class CodeSlicer:
         target_node_indices = dfg.get_nodes_for_lines(target_lines)
         visited: Set[int] = set()
         
-        # BFS forward through def-use chains
-        queue = list(target_node_indices)
+        # BFS with depth tracking: (node_idx, depth)
+        queue = deque([(idx, 0) for idx in target_node_indices])
         
         while queue:
-            node_idx = queue.pop(0)
+            node_idx, depth = queue.popleft()
+            
+            # Stop if max depth reached
+            if depth > self.config.max_depth:
+                continue
+                
             if node_idx in visited or node_idx >= len(dfg.nodes):
                 continue
             visited.add(node_idx)
@@ -371,7 +368,7 @@ class CodeSlicer:
             # Find edges FROM this node (forward)
             for edge in dfg.edges:
                 if edge.from_idx == node_idx and edge.to_idx not in visited:
-                    queue.append(edge.to_idx)
+                    queue.append((edge.to_idx, depth + 1))
         
         return dep_lines
     
@@ -386,11 +383,16 @@ class CodeSlicer:
         target_block_ids = cfg.get_blocks_for_lines(target_lines)
         visited: Set[int] = set()
         
-        # BFS backwards through CFG
-        queue = list(target_block_ids)
+        # BFS with depth tracking: (block_id, depth)
+        queue = deque([(block_id, 0) for block_id in target_block_ids])
         
         while queue:
-            block_id = queue.pop(0)
+            block_id, depth = queue.popleft()
+            
+            # Stop if max depth reached
+            if depth > self.config.max_depth:
+                continue
+                
             if block_id in visited:
                 continue
             visited.add(block_id)
@@ -407,7 +409,7 @@ class CodeSlicer:
             # Add predecessors to queue
             for pred_id in cfg.get_predecessors(block_id):
                 if pred_id not in visited:
-                    queue.append(pred_id)
+                    queue.append((pred_id, depth + 1))
         
         return control_lines
     
@@ -421,11 +423,16 @@ class CodeSlicer:
         target_block_ids = cfg.get_blocks_for_lines(target_lines)
         visited: Set[int] = set()
         
-        # BFS forward through CFG
-        queue = list(target_block_ids)
+        # BFS with depth tracking: (block_id, depth)
+        queue = deque([(block_id, 0) for block_id in target_block_ids])
         
         while queue:
-            block_id = queue.pop(0)
+            block_id, depth = queue.popleft()
+            
+            # Stop if max depth reached
+            if depth > self.config.max_depth:
+                continue
+                
             if block_id in visited:
                 continue
             visited.add(block_id)
@@ -441,7 +448,7 @@ class CodeSlicer:
             # Add successors to queue
             for succ_id in cfg.get_successors(block_id):
                 if succ_id not in visited:
-                    queue.append(succ_id)
+                    queue.append((succ_id, depth + 1))
         
         return control_lines
     

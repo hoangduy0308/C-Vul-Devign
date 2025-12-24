@@ -1,26 +1,20 @@
-"""Create zip file with forward slashes for cross-platform compatibility."""
 import zipfile
 import os
 
-zip_path = 'devign_pipeline.zip'
-source_dir = 'devign_pipeline'
+src = 'f:/Work/C Vul Devign/devign_pipeline'
+dst = 'f:/Work/C Vul Devign/devign_pipeline.zip'
 
-with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-    for root, dirs, files in os.walk(source_dir):
-        # Skip __pycache__ directories
-        dirs[:] = [d for d in dirs if d != '__pycache__']
+# Remove old zip if exists
+if os.path.exists(dst):
+    os.remove(dst)
+
+with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
+    for root, dirs, files in os.walk(src):
         for file in files:
-            if file.endswith('.pyc'):
-                continue
-            file_path = os.path.join(root, file)
-            # Use forward slashes for cross-platform compatibility
-            arcname = file_path.replace(os.sep, '/')
-            zf.write(file_path, arcname)
-            
-print('Done! Files in zip:')
-with zipfile.ZipFile(zip_path, 'r') as zf:
-    for name in zf.namelist()[:15]:
-        print(f'  {name}')
-    if len(zf.namelist()) > 15:
-        print(f'  ... and {len(zf.namelist()) - 15} more')
-    print(f'\nTotal: {len(zf.namelist())} files')
+            full_path = os.path.join(root, file)
+            # Create archive name with forward slashes
+            arc_name = os.path.relpath(full_path, src).replace('\\', '/')
+            zf.write(full_path, arc_name)
+            print(f'Added: {arc_name}')
+
+print('Done!')

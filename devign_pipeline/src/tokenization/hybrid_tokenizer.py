@@ -13,6 +13,33 @@ DANGEROUS_APIS = {
     # Memory allocation/deallocation (CWE-122, CWE-416, CWE-401)
     'malloc', 'calloc', 'realloc', 'free', 'alloca',
     
+    # FFmpeg memory APIs (common in Devign dataset - FFmpeg codebase)
+    'av_malloc', 'av_mallocz', 'av_calloc', 'av_realloc', 
+    'av_reallocp', 'av_realloc_f', 'av_fast_realloc',
+    'av_free', 'av_freep', 'av_buffer_alloc', 'av_buffer_allocz',
+    'av_strdup', 'av_strndup', 'av_asprintf',  # FFmpeg string APIs
+    # FFmpeg lifetime/refcount APIs (critical for UAF/double-free detection)
+    'av_buffer_unref', 'av_frame_unref', 'av_packet_unref',
+    'av_frame_free', 'av_packet_free', 'av_dict_free',
+    'avformat_close_input', 'avcodec_close', 'avcodec_free_context',
+    'sws_freeContext', 'swr_free', 'avfilter_graph_free',
+    'av_buffer_ref', 'av_frame_ref', 'av_packet_ref',  # ref counting
+    
+    # QEMU/GLib memory APIs (common in Devign dataset - QEMU codebase)
+    'g_malloc', 'g_malloc0', 'g_malloc_n', 'g_malloc0_n',
+    'g_realloc', 'g_realloc_n', 'g_free', 'g_new', 'g_new0',
+    'g_renew', 'g_try_malloc', 'g_try_malloc0', 'g_try_realloc',
+    'g_strdup', 'g_strndup', 'g_strdup_printf', 'g_strconcat',  # GLib string APIs
+    'qemu_malloc', 'qemu_mallocz', 'qemu_realloc', 'qemu_free',
+    'qemu_memalign', 'qemu_blockalign', 'qemu_strdup',  # QEMU APIs
+    # QEMU/GLib object lifecycle (critical for UAF detection)
+    'object_unref', 'object_ref', 'g_object_unref', 'g_object_ref',
+    'qobject_unref', 'qobject_ref', 'blk_unref', 'bdrv_unref',
+    
+    # Linux kernel memory APIs
+    'kmalloc', 'kzalloc', 'kcalloc', 'krealloc', 'kfree',
+    'vmalloc', 'vzalloc', 'vfree', 'kvmalloc', 'kvfree',
+    
     # Unsafe string functions (CWE-120, CWE-787, SDL Banned)
     'strcpy', 'strcat', 'gets', 'sprintf', 'vsprintf',
     'strncpy', 'strncat', 'strtok',  # can still cause issues
@@ -21,7 +48,7 @@ DANGEROUS_APIS = {
     'bcopy', 'bzero',  # deprecated but still appears in old code
     
     # Memory operations (CWE-119, CWE-125, CWE-787)
-    'memcpy', 'memmove', 'memset', 'memcmp', 'memchr',
+    'memcpy', 'memmove', 'memset', 'memchr',
     
     # Format string functions (CWE-134)
     'printf', 'fprintf', 'sprintf', 'snprintf',

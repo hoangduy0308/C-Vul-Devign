@@ -76,14 +76,57 @@ PRESERVED_OCTAL = {
     '0644', '0600', '0755', '0777', '0666', '0700', '0400',
 }
 
+# Common FFmpeg/QEMU function names to preserve (domain-specific, high frequency)
+# These are NOT dangerous but provide important semantic signal
+PRESERVE_FUNCTION_NAMES = {
+    # FFmpeg common functions (non-dangerous but informative)
+    'av_log', 'av_get_bytes_per_sample', 'av_get_channel_layout_nb_channels',
+    'av_rescale', 'av_rescale_q', 'av_rescale_rnd', 'av_compare_ts',
+    'av_image_get_linesize', 'av_image_fill_arrays', 'av_samples_get_buffer_size',
+    'avcodec_find_decoder', 'avcodec_find_encoder', 'avcodec_open2',
+    'avcodec_send_packet', 'avcodec_receive_frame', 'avcodec_send_frame',
+    'avcodec_receive_packet', 'avcodec_decode_video2', 'avcodec_decode_audio4',
+    'avformat_open_input', 'avformat_find_stream_info', 'av_read_frame',
+    'av_seek_frame', 'avformat_write_header', 'av_write_frame', 'av_interleaved_write_frame',
+    'av_init_packet', 'av_new_packet', 'av_grow_packet', 'av_shrink_packet',
+    'av_frame_alloc', 'av_frame_clone', 'av_frame_copy', 'av_frame_copy_props',
+    'av_frame_get_buffer', 'av_frame_make_writable', 'av_frame_is_writable',
+    'sws_getContext', 'sws_scale', 'swr_alloc', 'swr_init', 'swr_convert',
+    'av_opt_set', 'av_opt_get', 'av_opt_set_int', 'av_opt_set_double',
+    'av_dict_set', 'av_dict_get', 'av_dict_copy',
+    
+    # QEMU common functions
+    'cpu_get_tb_cpu_state', 'cpu_loop_exit', 'cpu_loop_exit_restore',
+    'qemu_log', 'qemu_log_mask', 'error_report', 'error_setg', 'error_propagate',
+    'memory_region_init', 'memory_region_init_io', 'memory_region_init_ram',
+    'address_space_read', 'address_space_write', 'address_space_rw',
+    'pci_dma_read', 'pci_dma_write', 'dma_memory_read', 'dma_memory_write',
+    'qemu_get_be32', 'qemu_get_be64', 'qemu_put_be32', 'qemu_put_be64',
+    'object_initialize', 'object_property_set_bool', 'object_property_set_int',
+    'timer_new_ns', 'timer_mod', 'timer_del', 'timer_free',
+    'qemu_mutex_lock', 'qemu_mutex_unlock', 'qemu_cond_wait', 'qemu_cond_signal',
+    
+    # GLib common functions
+    'g_hash_table_lookup', 'g_hash_table_insert', 'g_hash_table_remove',
+    'g_list_append', 'g_list_prepend', 'g_list_remove', 'g_list_free',
+    'g_string_new', 'g_string_append', 'g_string_free',
+    'g_error_free', 'g_clear_error',
+    
+    # Return value / error check patterns
+    'AVERROR', 'AVERROR_EOF', 'AVERROR_INVALIDDATA', 'av_err2str',
+    'IS_ERR', 'PTR_ERR', 'ERR_PTR', 'WARN_ON', 'BUG_ON',
+}
+
 # Default configuration
+# v4: vocab_size 10k -> 30k, min_freq 3 -> 2 (reduce UNK rate)
 DEFAULT_CONFIG = {
-    'min_freq': 3,
-    'max_vocab_size': 10000,
+    'min_freq': 2,
+    'max_vocab_size': 30000,
     'max_seq_length': 512,
     'preserve_identifiers': True,
     'preserve_dangerous_apis': True,
     'preserve_keywords': True,
+    'preserve_common_functions': True,  # NEW: preserve domain-specific function names
     'numeric_policy': {
         'keep_small_integers': True,
         'keep_negative_one': True,
@@ -355,6 +398,17 @@ class PreserveIdentifierTokenizer:
         if self.config.get('preserve_keywords', True) and value in C_KEYWORDS:
             return value, 'KEYWORD'
         
+        # Check previous token to filter out member access (obj.malloc or obj->malloc)
+        prev_idx = current_idx - 1
+        while prev_idx >= 0:
+            prev_val, prev_type, _, _ = raw_tokens[prev_idx]
+            if prev_type not in ('WHITESPACE', 'COMMENT_MULTI', 'COMMENT_SINGLE'):
+                break
+            prev_idx -= 1
+        
+        is_member_access = prev_idx >= 0 and raw_tokens[prev_idx][0] in ('.', '->')
+        
+        # Check next token for function call detection
         next_idx = current_idx + 1
         while next_idx < len(raw_tokens):
             next_val, next_type, _, _ = raw_tokens[next_idx]
@@ -364,16 +418,21 @@ class PreserveIdentifierTokenizer:
         
         is_function_call = next_idx < len(raw_tokens) and raw_tokens[next_idx][0] == '('
         
+        # Only tag as dangerous API if it's a real call (not member access)
         if self.config.get('preserve_dangerous_apis', True) and value in DANGEROUS_APIS:
-            if is_function_call:
+            if is_function_call and not is_member_access:
                 return value, 'API_DANGEROUS'
             else:
+                # Still preserve the token text for model to see
                 return value, 'IDENTIFIER'
         
-        if is_function_call and is_defense_function(value):
+        if is_function_call and not is_member_access and is_defense_function(value):
             return value, 'API_DEFENSE'
         
-        if is_function_call:
+        # NEW: Preserve common domain-specific function names
+        if is_function_call and not is_member_access:
+            if self.config.get('preserve_common_functions', True) and value in PRESERVE_FUNCTION_NAMES:
+                return value, 'FUNC_NAMED'
             return 'FUNC', 'FUNC'
         
         if self.config.get('preserve_identifiers', True):
@@ -498,6 +557,21 @@ def build_preserve_vocab(
     covered_count = sum(token_counts.get(tok, 0) for tok in vocab)
     coverage = covered_count / total_tokens if total_tokens > 0 else 0
     
+    # Count how many critical tokens are in vocab vs appearing in data
+    dangerous_apis_in_vocab = [api for api in DANGEROUS_APIS if api in vocab]
+    dangerous_apis_in_data = [api for api in DANGEROUS_APIS if api in token_counts]
+    defense_apis_in_vocab = [api for api in DEFENSE_APIS if api in vocab]
+    keywords_in_vocab = [kw for kw in C_KEYWORDS if kw in vocab]
+    force_keep_in_vocab = [ident for ident in force_keep if ident in vocab]
+    
+    # Dynamically verify all critical tokens are in vocab (catches regressions)
+    critical_tokens_verified = (
+        all(api in vocab for api in DANGEROUS_APIS) and
+        all(api in vocab for api in DEFENSE_APIS) and
+        all(kw in vocab for kw in C_KEYWORDS) and
+        all(ident in vocab for ident in force_keep)
+    )
+    
     debug_info = {
         'total_unique_tokens': total_unique,
         'total_token_count': total_tokens,
@@ -511,6 +585,17 @@ def build_preserve_vocab(
         'sample_dropped_by_freq': [(t, c) for t, c in dropped_by_freq[:20]],
         'sample_dropped_by_size': [(t, c) for t, c in dropped_by_size[:20]],
         'top_tokens_added': added_tokens[:30],
+        # Critical tokens verification
+        'dangerous_apis_in_vocab': len(dangerous_apis_in_vocab),
+        'dangerous_apis_in_data': len(dangerous_apis_in_data),
+        'dangerous_apis_total': len(DANGEROUS_APIS),
+        'defense_apis_in_vocab': len(defense_apis_in_vocab),
+        'defense_apis_total': len(DEFENSE_APIS),
+        'keywords_in_vocab': len(keywords_in_vocab),
+        'keywords_total': len(C_KEYWORDS),
+        'force_keep_in_vocab': len(force_keep_in_vocab),
+        'force_keep_total': len(force_keep),
+        'critical_tokens_never_unk': critical_tokens_verified,
     }
     
     return vocab, debug_info
