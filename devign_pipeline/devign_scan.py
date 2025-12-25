@@ -34,6 +34,9 @@ from dataclasses import dataclass
 sys.path.insert(0, str(Path(__file__).parent))
 
 from devign_infer import VulnerabilityDetector, SARIFReporter, InferenceConfig
+from devign_infer.config import find_model_path, find_vocab_path, validate_paths
+
+SCRIPT_DIR = Path(__file__).parent.resolve()
 
 
 @dataclass
@@ -274,9 +277,24 @@ def generate_sarif(
 
 def cmd_scan(args):
     """Handle scan command."""
+    model_path = find_model_path(args.model, SCRIPT_DIR)
+    vocab_path = find_vocab_path(args.vocab, SCRIPT_DIR)
+    
+    errors = validate_paths(model_path, vocab_path)
+    if errors:
+        print("Error: Cannot find required files:", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+        print("\nSearched locations (in priority order):", file=sys.stderr)
+        print("  1. CLI arguments (--model, --vocab)", file=sys.stderr)
+        print("  2. Environment variables (MODEL_PATH, VOCAB_PATH)", file=sys.stderr)
+        print(f"  3. Relative to script: {SCRIPT_DIR}", file=sys.stderr)
+        print("  4. Current working directory", file=sys.stderr)
+        return 1
+    
     scanner = DevignScanner(
-        model_path=args.model,
-        vocab_path=args.vocab,
+        model_path=model_path,
+        vocab_path=vocab_path,
         config_path=args.config,
         threshold=args.threshold,
         device=args.device
@@ -321,9 +339,24 @@ def cmd_scan(args):
 
 def cmd_scan_diff(args):
     """Handle scan-diff command (for CI/CD)."""
+    model_path = find_model_path(args.model, SCRIPT_DIR)
+    vocab_path = find_vocab_path(args.vocab, SCRIPT_DIR)
+    
+    errors = validate_paths(model_path, vocab_path)
+    if errors:
+        print("Error: Cannot find required files:", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+        print("\nSearched locations (in priority order):", file=sys.stderr)
+        print("  1. CLI arguments (--model, --vocab)", file=sys.stderr)
+        print("  2. Environment variables (MODEL_PATH, VOCAB_PATH)", file=sys.stderr)
+        print(f"  3. Relative to script: {SCRIPT_DIR}", file=sys.stderr)
+        print("  4. Current working directory", file=sys.stderr)
+        return 1
+    
     scanner = DevignScanner(
-        model_path=args.model,
-        vocab_path=args.vocab,
+        model_path=model_path,
+        vocab_path=vocab_path,
         config_path=args.config,
         threshold=args.threshold,
         device=args.device
@@ -383,11 +416,11 @@ Examples:
     )
     
     parser.add_argument('--model', '-m', type=str,
-                       default='models/best_model.pt',
-                       help='Path to model checkpoint')
+                       default=None,
+                       help='Path to model checkpoint (auto-detected if not specified)')
     parser.add_argument('--vocab', '-v', type=str,
-                       default='models/vocab.json',
-                       help='Path to vocabulary file')
+                       default=None,
+                       help='Path to vocabulary file (auto-detected if not specified)')
     parser.add_argument('--config', '-c', type=str,
                        help='Path to model config file')
     parser.add_argument('--threshold', '-t', type=float, default=0.5,

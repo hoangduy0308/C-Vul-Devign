@@ -10,7 +10,15 @@ Features:
 import re
 from typing import List, Dict, Tuple, Set, Optional
 from collections import Counter
+from enum import Enum
 from tqdm import tqdm
+
+
+class TruncationStrategy(Enum):
+    """Truncation strategies for long sequences."""
+    BACK = 'back'        # Keep first N tokens (current default)
+    FRONT = 'front'      # Keep last N tokens
+    HEAD_TAIL = 'head_tail'  # Keep first M + last N tokens
 
 from .hybrid_tokenizer import (
     DANGEROUS_APIS, DEFENSE_APIS, C_KEYWORDS,
@@ -134,7 +142,12 @@ DEFAULT_CONFIG = {
         'keep_common_sizes': True,
         'keep_hex_masks': True,
         'keep_permissions': True,
-    }
+    },
+    # Truncation settings for long sequences
+    'truncation_strategy': 'head_tail',  # 'back', 'front', or 'head_tail'
+    'head_tokens': 192,   # Tokens from start (signature, declarations)
+    'tail_tokens': 319,   # Tokens from end (main logic, cleanup, return)
+    # Total: 192 + 1 (SEP) + 319 = 512
 }
 
 
@@ -604,10 +617,21 @@ def build_preserve_vocab(
 def vectorize_preserve(
     tokens: List[str], 
     vocab: Dict[str, int], 
-    max_len: int = 512
+    max_len: int = 512,
+    truncation_strategy: str = 'head_tail',
+    head_tokens: int = 192,
+    tail_tokens: int = 319
 ) -> Tuple[List[int], List[int], List[int]]:
     """
     Vectorize tokens with UNK tracking.
+    
+    Args:
+        tokens: List of token strings
+        vocab: Vocabulary mapping token -> id
+        max_len: Maximum sequence length
+        truncation_strategy: 'back', 'front', or 'head_tail'
+        head_tokens: Number of tokens to keep from start (for head_tail)
+        tail_tokens: Number of tokens to keep from end (for head_tail)
     
     Returns:
         input_ids: Token IDs
@@ -616,11 +640,34 @@ def vectorize_preserve(
     """
     unk_id = vocab.get('UNK', 1)
     pad_id = vocab.get('PAD', 0)
+    sep_id = vocab.get('SEP', 4)
+    
+    # Apply truncation strategy
+    if len(tokens) <= max_len:
+        truncated_tokens = tokens
+    elif truncation_strategy == 'front':
+        truncated_tokens = tokens[-max_len:]
+    elif truncation_strategy == 'head_tail':
+        # HEAD + SEP + TAIL
+        # Ensure head + 1 (SEP) + tail = max_len
+        effective_tail = min(tail_tokens, max_len - head_tokens - 1)
+        effective_head = min(head_tokens, max_len - effective_tail - 1)
+        
+        if len(tokens) <= effective_head + effective_tail:
+            # No need to truncate, sequence fits
+            truncated_tokens = tokens
+        else:
+            head = tokens[:effective_head]
+            tail = tokens[-effective_tail:] if effective_tail > 0 else []
+            # Insert SEP token between head and tail
+            truncated_tokens = head + ['SEP'] + tail
+    else:  # 'back' - default
+        truncated_tokens = tokens[:max_len]
     
     input_ids = []
     unk_positions = []
     
-    for i, tok in enumerate(tokens[:max_len]):
+    for i, tok in enumerate(truncated_tokens):
         if tok in vocab:
             input_ids.append(vocab[tok])
         else:
@@ -641,10 +688,21 @@ def vectorize_preserve(
 def vectorize_batch_preserve(
     tokens_list: List[List[str]], 
     vocab: Dict[str, int], 
-    max_len: int = 512
+    max_len: int = 512,
+    truncation_strategy: str = 'head_tail',
+    head_tokens: int = 192,
+    tail_tokens: int = 319
 ) -> Tuple:
     """
     Batch vectorization with statistics.
+    
+    Args:
+        tokens_list: List of tokenized samples
+        vocab: Vocabulary mapping token -> id
+        max_len: Maximum sequence length
+        truncation_strategy: 'back', 'front', or 'head_tail'
+        head_tokens: Number of tokens to keep from start (for head_tail)
+        tail_tokens: Number of tokens to keep from end (for head_tail)
     
     Returns:
         input_ids: np.ndarray
@@ -659,7 +717,8 @@ def vectorize_batch_preserve(
             np.zeros((0, max_len), dtype=np.int32),
             np.zeros((0, max_len), dtype=np.int32),
             [],
-            {'total_tokens': 0, 'total_unks': 0, 'unk_rate': 0.0, 'avg_len': 0.0}
+            {'total_tokens': 0, 'total_unks': 0, 'unk_rate': 0.0, 'avg_len': 0.0, 
+             'truncation_strategy': truncation_strategy}
         )
     
     all_input_ids = []
@@ -668,10 +727,19 @@ def vectorize_batch_preserve(
     
     total_tokens = 0
     total_unks = 0
+    truncated_count = 0
     unk_tokens = Counter()
     
     for tokens in tqdm(tokens_list, desc="Vectorizing"):
-        input_ids, attention_mask, unk_positions = vectorize_preserve(tokens, vocab, max_len)
+        if len(tokens) > max_len:
+            truncated_count += 1
+        
+        input_ids, attention_mask, unk_positions = vectorize_preserve(
+            tokens, vocab, max_len, 
+            truncation_strategy=truncation_strategy,
+            head_tokens=head_tokens,
+            tail_tokens=tail_tokens
+        )
         all_input_ids.append(input_ids)
         all_attention_masks.append(attention_mask)
         all_unk_positions.append(unk_positions)
@@ -689,6 +757,9 @@ def vectorize_batch_preserve(
         'total_unks': total_unks,
         'unk_rate': total_unks / total_tokens if total_tokens > 0 else 0,
         'top_unk_tokens': unk_tokens.most_common(50),
+        'truncation_strategy': truncation_strategy,
+        'truncated_samples': truncated_count,
+        'truncated_ratio': truncated_count / len(tokens_list) if tokens_list else 0,
     }
     
     return (

@@ -36,6 +36,8 @@ from sklearn.metrics import (
     f1_score, roc_auc_score, confusion_matrix
 )
 from tqdm.auto import tqdm
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # Environment setup
 if os.path.exists('/kaggle/input'):
@@ -69,8 +71,10 @@ from src.training.train_simplified import (
 
 MODEL_DIR = os.path.join(WORKING_DIR, 'models')
 LOG_DIR = os.path.join(WORKING_DIR, 'logs')
+PLOT_DIR = os.path.join(WORKING_DIR, 'plots')
 os.makedirs(MODEL_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(PLOT_DIR, exist_ok=True)
 
 # Device setup
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -684,6 +688,201 @@ def set_seed(seed: int):
 
 
 # %% [markdown]
+# ## 6. Visualization Functions
+
+# %%
+def plot_training_history(history: Dict[str, List[float]], seed: int, save_path: str = None):
+    """
+    Plot training history: loss, F1, and AUC over epochs.
+    
+    Args:
+        history: Dict with keys 'train_loss', 'train_f1', 'val_f1', 'val_auc'
+        seed: Seed number for title
+        save_path: Optional path to save the figure
+    """
+    epochs = range(1, len(history['train_loss']) + 1)
+    
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    
+    # Plot Loss
+    ax1 = axes[0]
+    ax1.plot(epochs, history['train_loss'], 'b-', label='Train Loss', linewidth=2)
+    if 'val_loss' in history:
+        ax1.plot(epochs, history['val_loss'], 'r--', label='Val Loss', linewidth=2)
+    ax1.set_xlabel('Epoch', fontsize=11)
+    ax1.set_ylabel('Loss', fontsize=11)
+    ax1.set_title('Training & Validation Loss', fontsize=12, fontweight='bold')
+    ax1.legend(loc='upper right')
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot F1
+    ax2 = axes[1]
+    ax2.plot(epochs, history['train_f1'], 'b-', label='Train F1', linewidth=2)
+    ax2.plot(epochs, history['val_f1'], 'r--', label='Val F1', linewidth=2)
+    best_epoch = np.argmax(history['val_f1']) + 1
+    best_f1 = max(history['val_f1'])
+    ax2.axvline(x=best_epoch, color='g', linestyle=':', alpha=0.7, label=f'Best (ep={best_epoch})')
+    ax2.scatter([best_epoch], [best_f1], color='g', s=100, zorder=5, marker='*')
+    ax2.set_xlabel('Epoch', fontsize=11)
+    ax2.set_ylabel('F1 Score', fontsize=11)
+    ax2.set_title('Training & Validation F1', fontsize=12, fontweight='bold')
+    ax2.legend(loc='lower right')
+    ax2.grid(True, alpha=0.3)
+    
+    # Plot AUC
+    ax3 = axes[2]
+    if 'train_auc' in history:
+        ax3.plot(epochs, history['train_auc'], 'b-', label='Train AUC', linewidth=2)
+    ax3.plot(epochs, history['val_auc'], 'r--', label='Val AUC', linewidth=2)
+    best_auc_epoch = np.argmax(history['val_auc']) + 1
+    best_auc = max(history['val_auc'])
+    ax3.scatter([best_auc_epoch], [best_auc], color='g', s=100, zorder=5, marker='*')
+    ax3.set_xlabel('Epoch', fontsize=11)
+    ax3.set_ylabel('AUC', fontsize=11)
+    ax3.set_title('Validation AUC', fontsize=12, fontweight='bold')
+    ax3.legend(loc='lower right')
+    ax3.grid(True, alpha=0.3)
+    
+    plt.suptitle(f'Training History (Seed {seed})', fontsize=14, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+        print(f"  Saved training history plot: {save_path}")
+    
+    plt.show()
+    plt.close()
+
+
+def plot_confusion_matrix(
+    labels: np.ndarray, 
+    preds: np.ndarray, 
+    threshold: float,
+    seed: int = None,
+    title_suffix: str = "",
+    save_path: str = None
+):
+    """
+    Plot confusion matrix with detailed annotations.
+    
+    Args:
+        labels: Ground truth labels
+        preds: Predicted labels (binary)
+        threshold: Threshold used for prediction
+        seed: Optional seed number for title
+        title_suffix: Additional text for title (e.g., "Test Set")
+        save_path: Optional path to save the figure
+    """
+    cm = confusion_matrix(labels, preds)
+    
+    # Calculate percentages
+    cm_percent = cm.astype('float') / cm.sum() * 100
+    
+    fig, ax = plt.subplots(figsize=(8, 6))
+    
+    # Create heatmap
+    sns.heatmap(
+        cm, 
+        annot=False,  # We'll add custom annotations
+        fmt='d', 
+        cmap='Blues',
+        xticklabels=['Non-Vulnerable (0)', 'Vulnerable (1)'],
+        yticklabels=['Non-Vulnerable (0)', 'Vulnerable (1)'],
+        ax=ax,
+        cbar_kws={'label': 'Count'}
+    )
+    
+    # Add custom annotations with count and percentage
+    for i in range(2):
+        for j in range(2):
+            count = cm[i, j]
+            percent = cm_percent[i, j]
+            text = f'{count}\n({percent:.1f}%)'
+            ax.text(j + 0.5, i + 0.5, text, 
+                   ha='center', va='center', fontsize=14, fontweight='bold',
+                   color='white' if cm[i, j] > cm.max() / 2 else 'black')
+    
+    ax.set_xlabel('Predicted Label', fontsize=12)
+    ax.set_ylabel('True Label', fontsize=12)
+    
+    # Build title
+    title = "Confusion Matrix"
+    if title_suffix:
+        title += f" - {title_suffix}"
+    if seed is not None:
+        title += f" (Seed {seed})"
+    title += f"\nThreshold: {threshold:.2f}"
+    ax.set_title(title, fontsize=13, fontweight='bold')
+    
+    # Add metrics as text - use sklearn for consistency with EvalMetrics
+    metrics_text = (
+        f'Accuracy: {accuracy_score(labels, preds):.4f}\n'
+        f'Precision: {precision_score(labels, preds, zero_division=0):.4f}\n'
+        f'Recall: {recall_score(labels, preds, zero_division=0):.4f}\n'
+        f'F1 Score: {f1_score(labels, preds, zero_division=0):.4f}'
+    )
+    ax.text(2.5, 0.5, metrics_text, fontsize=11, verticalalignment='center',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+        print(f"  Saved confusion matrix: {save_path}")
+    
+    plt.show()
+    plt.close()
+
+
+def plot_multi_seed_comparison(all_histories: List[Dict], seeds: List[int], save_path: str = None):
+    """
+    Plot comparison of training curves across multiple seeds.
+    
+    Args:
+        all_histories: List of history dicts from each seed
+        seeds: List of seed values
+        save_path: Optional path to save the figure
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    
+    colors = plt.cm.tab10(np.linspace(0, 1, len(seeds)))
+    
+    # Plot Val F1 across seeds
+    ax1 = axes[0]
+    for i, (history, seed) in enumerate(zip(all_histories, seeds)):
+        epochs = range(1, len(history['val_f1']) + 1)
+        ax1.plot(epochs, history['val_f1'], color=colors[i], linewidth=2, 
+                label=f'Seed {seed} (best={max(history["val_f1"]):.4f})')
+    ax1.set_xlabel('Epoch', fontsize=11)
+    ax1.set_ylabel('Validation F1', fontsize=11)
+    ax1.set_title('Validation F1 Across Seeds', fontsize=12, fontweight='bold')
+    ax1.legend(loc='lower right')
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot Val AUC across seeds
+    ax2 = axes[1]
+    for i, (history, seed) in enumerate(zip(all_histories, seeds)):
+        epochs = range(1, len(history['val_auc']) + 1)
+        ax2.plot(epochs, history['val_auc'], color=colors[i], linewidth=2,
+                label=f'Seed {seed} (best={max(history["val_auc"]):.4f})')
+    ax2.set_xlabel('Epoch', fontsize=11)
+    ax2.set_ylabel('Validation AUC', fontsize=11)
+    ax2.set_title('Validation AUC Across Seeds', fontsize=12, fontweight='bold')
+    ax2.legend(loc='lower right')
+    ax2.grid(True, alpha=0.3)
+    
+    plt.suptitle('Multi-Seed Training Comparison', fontsize=14, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+        print(f"Saved multi-seed comparison: {save_path}")
+    
+    plt.show()
+    plt.close()
+
+
+# %% [markdown]
 # ## 6. Single Seed Training
 
 # %%
@@ -694,13 +893,15 @@ def train_single_seed(
     val_loader: DataLoader,
     pretrained_embedding: Optional[np.ndarray] = None,
     verbose: bool = True,
-) -> Tuple[EvalMetrics, nn.Module]:
+    plot_history: bool = True,
+) -> Tuple[EvalMetrics, nn.Module, Dict[str, List[float]]]:
     """
     Train model with a single seed.
     
     Returns:
         metrics: EvalMetrics from best checkpoint
         model: Trained model (SWA if enabled, else best checkpoint)
+        history: Training history dict with train_loss, train_f1, val_f1, val_auc, val_loss
     """
     set_seed(seed)
     
@@ -754,10 +955,19 @@ def train_single_seed(
         swa_model = AveragedModel(base_model)
         swa_scheduler = SWALR(optimizer, swa_lr=config.swa_lr, anneal_epochs=2)
     
-    # Training loop
+    # Training loop with history tracking
     best_f1, best_epoch = 0.0, 0
     best_state = None
     best_metrics = None
+    
+    history = {
+        'train_loss': [],
+        'train_f1': [],
+        'train_auc': [],
+        'val_loss': [],
+        'val_f1': [],
+        'val_auc': [],
+    }
     
     for epoch in range(1, config.max_epochs + 1):
         epoch_start = time.time()
@@ -769,6 +979,14 @@ def train_single_seed(
         val_metrics = evaluate(model, val_loader, criterion, config, DEVICE)
         
         epoch_time = time.time() - epoch_start
+        
+        # Record history
+        history['train_loss'].append(train_metrics['loss'])
+        history['train_f1'].append(train_metrics['f1'])
+        history['train_auc'].append(train_metrics['auc'])
+        history['val_loss'].append(val_metrics['loss'])
+        history['val_f1'].append(val_metrics['f1'])
+        history['val_auc'].append(val_metrics['auc'])
         
         if verbose:
             print(
@@ -827,7 +1045,12 @@ def train_single_seed(
         threshold=best_metrics['threshold'],
     )
     
-    return eval_metrics, final_model
+    # Plot training history
+    if plot_history:
+        history_plot_path = os.path.join(PLOT_DIR, f'training_history_seed{seed}.png')
+        plot_training_history(history, seed, save_path=history_plot_path)
+    
+    return eval_metrics, final_model, history
 
 
 # %% [markdown]
@@ -856,16 +1079,23 @@ def train_multi_seed(
     
     all_results = []
     all_models = []
+    all_histories = []
     
     for i, seed in enumerate(seeds):
         print(f"\n--- Seed {seed} ({i+1}/{n_seeds}) ---")
-        metrics, model = train_single_seed(
-            config, seed, train_loader, val_loader, pretrained_embedding
+        metrics, model, history = train_single_seed(
+            config, seed, train_loader, val_loader, pretrained_embedding,
+            plot_history=True
         )
         all_results.append(metrics)
         all_models.append(model)
+        all_histories.append(history)
         
         print(f"  → F1={metrics.f1:.4f}, AUC={metrics.auc:.4f}, T={metrics.threshold:.2f}")
+    
+    # Plot multi-seed comparison
+    comparison_path = os.path.join(PLOT_DIR, 'multi_seed_comparison.png')
+    plot_multi_seed_comparison(all_histories, seeds, save_path=comparison_path)
     
     # Aggregate results
     aggregated = aggregate_results(all_results, config_name="multi_seed")
@@ -878,8 +1108,9 @@ def train_multi_seed(
     # Test set evaluation with best model (highest val F1)
     best_idx = np.argmax([r.f1 for r in all_results])
     best_model = all_models[best_idx]
+    best_seed = seeds[best_idx]
     
-    print(f"\n--- Test Set Evaluation (using seed {seeds[best_idx]}) ---")
+    print(f"\n--- Test Set Evaluation (using seed {best_seed}) ---")
     
     # Create criterion for test eval
     test_labels = test_loader.dataset.labels
@@ -889,6 +1120,18 @@ def train_multi_seed(
     test_metrics = evaluate(best_model, test_loader, criterion, config, DEVICE)
     print(f"Test: F1={test_metrics['f1']:.4f} P={test_metrics['precision']:.4f} "
           f"R={test_metrics['recall']:.4f} AUC={test_metrics['auc']:.4f}")
+    
+    # Plot confusion matrix for test set
+    test_preds = (test_metrics['probs'] >= test_metrics['threshold']).astype(int)
+    cm_path = os.path.join(PLOT_DIR, f'confusion_matrix_test_seed{best_seed}.png')
+    plot_confusion_matrix(
+        test_metrics['labels'], 
+        test_preds, 
+        test_metrics['threshold'],
+        seed=best_seed,
+        title_suffix="Test Set",
+        save_path=cm_path
+    )
     
     return aggregated
 
@@ -958,14 +1201,37 @@ def main(
     # Train
     if n_seeds == 1:
         # Single seed training
-        metrics, model = train_single_seed(
+        seed = config.ensemble_base_seed
+        metrics, model, history = train_single_seed(
             config, 
-            config.ensemble_base_seed, 
+            seed, 
             train_loader, 
             val_loader, 
-            pretrained_embedding
+            pretrained_embedding,
+            plot_history=True
         )
         print(f"\nFinal: F1={metrics.f1:.4f}, AUC={metrics.auc:.4f}")
+        
+        # Evaluate on test set and plot confusion matrix
+        test_labels = test_loader.dataset.labels
+        pos_weight = get_pos_weight_for_config(config, test_labels)
+        criterion = SimplifiedLoss(loss_type=config.loss_type, pos_weight=pos_weight).to(DEVICE)
+        test_metrics = evaluate(model, test_loader, criterion, config, DEVICE)
+        
+        print(f"Test: F1={test_metrics['f1']:.4f} P={test_metrics['precision']:.4f} "
+              f"R={test_metrics['recall']:.4f} AUC={test_metrics['auc']:.4f}")
+        
+        # Plot confusion matrix for test set
+        test_preds = (test_metrics['probs'] >= test_metrics['threshold']).astype(int)
+        cm_path = os.path.join(PLOT_DIR, f'confusion_matrix_test_seed{seed}.png')
+        plot_confusion_matrix(
+            test_metrics['labels'], 
+            test_preds, 
+            test_metrics['threshold'],
+            seed=seed,
+            title_suffix="Test Set",
+            save_path=cm_path
+        )
         
         # Save model
         save_path = os.path.join(MODEL_DIR, 'best_model_v2.pt')

@@ -24,7 +24,14 @@ Usage:
 
 from .detector import VulnerabilityDetector
 from .sarif import SARIFReporter
-from .config import InferenceConfig
+from .config import InferenceConfig, find_model_path, find_vocab_path, validate_paths
 
 __version__ = "1.0.0"
-__all__ = ["VulnerabilityDetector", "SARIFReporter", "InferenceConfig"]
+__all__ = [
+    "VulnerabilityDetector",
+    "SARIFReporter", 
+    "InferenceConfig",
+    "find_model_path",
+    "find_vocab_path",
+    "validate_paths"
+]

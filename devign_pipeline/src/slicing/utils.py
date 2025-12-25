@@ -4,9 +4,59 @@ Shared utilities for finding criterion lines for code slicing.
 """
 
 import re
-from typing import List
+from typing import List, Set
 
 from ..tokenization.hybrid_tokenizer import DANGEROUS_APIS
+
+
+# Defense tokens for vulnerability detection - error handling, cleanup, etc.
+DEFENSE_TOKENS: Set[str] = {
+    'return', 'goto', 'break', 'continue', 'free', 'close', 
+    'unlock', 'error', 'NULL', 'EINVAL', 'assert', 'panic',
+    'kfree', 'release', 'destroy', 'cleanup', 'fail'
+}
+
+
+def is_defense_line(line: str, defense_tokens: Set[str] = None) -> bool:
+    """Check if a line contains defense tokens (error handling, cleanup, etc.).
+    
+    Args:
+        line: Source line to check
+        defense_tokens: Optional custom set of defense tokens.
+                       Defaults to DEFENSE_TOKENS.
+    
+    Returns:
+        True if line contains any defense token.
+    """
+    if defense_tokens is None:
+        defense_tokens = DEFENSE_TOKENS
+    
+    line_lower = line.lower()
+    for token in defense_tokens:
+        if token.lower() in line_lower:
+            return True
+    return False
+
+
+def find_defense_lines(code: str, defense_tokens: Set[str] = None) -> List[int]:
+    """Find all lines containing defense tokens.
+    
+    Args:
+        code: Source code string to analyze
+        defense_tokens: Optional custom set of defense tokens.
+    
+    Returns:
+        List of 1-indexed line numbers containing defense tokens.
+    """
+    if defense_tokens is None:
+        defense_tokens = DEFENSE_TOKENS
+    
+    lines = code.split('\n')
+    defense_lines = []
+    for i, line in enumerate(lines, 1):
+        if is_defense_line(line, defense_tokens):
+            defense_lines.append(i)
+    return defense_lines
 
 
 def find_criterion_lines(code: str, dangerous_apis: set = None) -> List[int]:

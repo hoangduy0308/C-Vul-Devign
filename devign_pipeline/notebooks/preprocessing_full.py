@@ -70,16 +70,38 @@ except ImportError:
 TOKENIZER_TYPE = 'preserve'
 
 # PDG-based slicing configuration
-# Tuned based on SySeVR/DeepWukong unbounded traversal approach but with budget limits
+# Fixed: criterion clustering + separator + token budget enforcement
 PDG_SLICE_CONFIG = {
-    'backward_depth': 3,             # Max 3 hops backward (follows actual deps)
+    'backward_depth': 3,             # Max 3 hops backward
     'forward_depth': 2,              # Max 2 hops forward
     'include_data_deps': True,       # Include data dependencies
     'include_control_deps': True,    # Include control dependencies
-    'control_predicate_only': True,  # Only include if/while headers, not full blocks
-    'max_lines': 30,                 # Hard cap on output lines
-    'max_tokens': 256,               # Hard cap on tokens
-    'fallback_window': 3,            # Small fallback if PDG fails
+    'control_predicate_only': False, # Include full control blocks (not just headers)
+    'max_lines': 100,                # Hard cap on output lines
+    'max_tokens': 480,               # Hard cap on tokens
+    'fallback_window': 8,            # Increased from 3 (safe after criteria reduction)
+    
+    # Criterion control
+    'max_criteria': 3,               # Max criteria to avoid scattered slices
+    'criterion_cluster_gap': 5,      # Cluster nearby criteria
+    
+    # Separator settings
+    'insert_separators': True,       # Insert [SEP] between segments
+    'separator_token': '[SEP]',      
+    'separator_gap': 2,              # Gap > 2 triggers separator
+    
+    # Quality control
+    'preserve_defense_statements': True,  # Keep null/bounds checks near criteria
+    'min_slice_tokens': 40,               # Expand slice if too short
+    
+    # SEP normalization (NEW)
+    'normalize_separators': True,
+    'min_tokens_between_sep': 6,
+    'max_sep_ratio': 0.08,
+    
+    # Deduplication (NEW)
+    'deduplicate_statements': True,
+    'max_duplicate_calls': 2,
 }
 
 # Tokenization configuration
@@ -98,7 +120,12 @@ if TOKENIZER_TYPE == 'preserve':
             'keep_common_sizes': True,
             'keep_hex_masks': True,
             'keep_permissions': True,
-        }
+        },
+        
+        # Truncation strategy (NEW)
+        'truncation_strategy': 'head_tail',
+        'head_tokens': 192,
+        'tail_tokens': 319,
     }
 else:  # canonical
     TOKENIZER_CONFIG = {
@@ -298,6 +325,23 @@ pdg_config = PDGSliceConfig(
     max_lines=PDG_SLICE_CONFIG['max_lines'],
     max_tokens=PDG_SLICE_CONFIG['max_tokens'],
     fallback_window=PDG_SLICE_CONFIG['fallback_window'],
+    # Criterion control
+    max_criteria=PDG_SLICE_CONFIG['max_criteria'],
+    criterion_cluster_gap=PDG_SLICE_CONFIG['criterion_cluster_gap'],
+    # Separator settings
+    insert_separators=PDG_SLICE_CONFIG['insert_separators'],
+    separator_token=PDG_SLICE_CONFIG['separator_token'],
+    separator_gap=PDG_SLICE_CONFIG['separator_gap'],
+    # Quality control
+    preserve_defense_statements=PDG_SLICE_CONFIG['preserve_defense_statements'],
+    min_slice_tokens=PDG_SLICE_CONFIG['min_slice_tokens'],
+    # SEP normalization
+    normalize_separators=PDG_SLICE_CONFIG.get('normalize_separators', True),
+    min_tokens_between_sep=PDG_SLICE_CONFIG.get('min_tokens_between_sep', 6),
+    max_sep_ratio=PDG_SLICE_CONFIG.get('max_sep_ratio', 0.08),
+    # Deduplication
+    deduplicate_statements=PDG_SLICE_CONFIG.get('deduplicate_statements', True),
+    max_duplicate_calls=PDG_SLICE_CONFIG.get('max_duplicate_calls', 2),
 )
 slicer = PDGSlicer(pdg_config)
 
@@ -348,6 +392,20 @@ def process_pdg_slice_batch(df, batch_size=500):
     pdg_success_count = 0
     exception_counts = defaultdict(int)
     
+    # Quality tracking stats
+    quality_stats = {
+        'passed_quality_check': 0,      # Slices that met min_slice_tokens
+        'expanded_short_slices': 0,      # Slices that were too short and expanded
+        'defense_tokens_preserved': 0,   # Count of defense tokens preserved
+        'total_defense_tokens': 0,       # Total defense tokens found
+    }
+    
+    # Defense token patterns
+    defense_patterns = ['if', 'NULL', 'null', '!=', '==', '<', '>', '<=', '>=', 
+                        'sizeof', 'strlen', 'assert', 'check', 'valid']
+    
+    min_tokens = PDG_SLICE_CONFIG.get('min_slice_tokens', 40)
+    
     for start in tqdm(range(0, n_samples, batch_size), desc="PDG Slicing"):
         end = min(start + batch_size, n_samples)
         batch_codes = codes[start:end]
@@ -362,10 +420,28 @@ def process_pdg_slice_batch(df, batch_size=500):
                 if not result.used_fallback:
                     pdg_success_count += 1
                 
-                # Check if slice is too short - fallback to full function with SEP
-                if estimate_tokens(sliced) < PROCESS_CONFIG['min_slice_tokens']:
+                sliced_token_count = estimate_tokens(sliced)
+                
+                # Quality check: use same logic as PDGSlicer._check_slice_quality()
+                # Slice is valid if: has enough tokens OR (has defense tokens AND has function calls)
+                has_defense = any(pattern in sliced for pattern in ['return', 'goto', 'free', 'NULL', 'EINVAL', 'assert', 'if', 'check'])
+                has_call = '(' in sliced and ')' in sliced
+                slice_quality_ok = sliced_token_count >= min_tokens or (has_defense and has_call)
+                
+                if slice_quality_ok:
+                    quality_stats['passed_quality_check'] += 1
+                else:
+                    # Slice lacks both sufficient tokens AND defense+call patterns - use fallback
                     sliced = insert_sep_in_middle(code)
+                    quality_stats['expanded_short_slices'] += 1
                     fallback_count += 1
+                
+                # Track defense token preservation
+                for pattern in defense_patterns:
+                    if pattern in sliced:
+                        quality_stats['defense_tokens_preserved'] += 1
+                    if pattern in code:
+                        quality_stats['total_defense_tokens'] += 1
                 
                 sliced_codes.append(sliced)
             except Exception as e:
@@ -373,8 +449,18 @@ def process_pdg_slice_batch(df, batch_size=500):
                 fallback_count += 1
                 exception_counts[type(e).__name__] += 1
     
+    # Print statistics
     print(f"  PDG success: {pdg_success_count}/{n_samples} ({100*pdg_success_count/n_samples:.1f}%)")
     print(f"  Fallback to full function: {fallback_count} samples")
+    
+    # Quality stats
+    print(f"\n  === Slice Quality Stats ===")
+    print(f"  Passed quality check (>= {min_tokens} tokens): {quality_stats['passed_quality_check']}/{n_samples} ({100*quality_stats['passed_quality_check']/n_samples:.1f}%)")
+    print(f"  Expanded (too short): {quality_stats['expanded_short_slices']} samples")
+    if quality_stats['total_defense_tokens'] > 0:
+        preservation_rate = quality_stats['defense_tokens_preserved'] / quality_stats['total_defense_tokens']
+        print(f"  Defense token preservation: {quality_stats['defense_tokens_preserved']}/{quality_stats['total_defense_tokens']} ({100*preservation_rate:.1f}%)")
+    
     if exception_counts:
         print(f"  Exceptions summary:")
         for exc_type, count in sorted(exception_counts.items(), key=lambda x: -x[1]):
@@ -600,27 +686,46 @@ print("STEP 6: VECTORIZATION")
 print("=" * 60)
 
 max_len = TOKENIZER_CONFIG['max_seq_length']
+truncation_strategy = TOKENIZER_CONFIG.get('truncation_strategy', 'head_tail')
+head_tokens = TOKENIZER_CONFIG.get('head_tokens', 192)
+tail_tokens = TOKENIZER_CONFIG.get('tail_tokens', 319)
 
 if TOKENIZER_TYPE == 'preserve':
+    print(f"\nTruncation strategy: {truncation_strategy}")
+    if truncation_strategy == 'head_tail':
+        print(f"  Head tokens: {head_tokens}, Tail tokens: {tail_tokens}")
+    
     print("\nVectorizing train set...")
     train_input_ids, train_attention_mask, train_unk_pos, train_vec_stats = vectorize_batch_preserve(
-        train_tokens, vocab, max_len
+        train_tokens, vocab, max_len,
+        truncation_strategy=truncation_strategy,
+        head_tokens=head_tokens,
+        tail_tokens=tail_tokens
     )
     
     print("Vectorizing val set...")
     val_input_ids, val_attention_mask, val_unk_pos, val_vec_stats = vectorize_batch_preserve(
-        val_tokens, vocab, max_len
+        val_tokens, vocab, max_len,
+        truncation_strategy=truncation_strategy,
+        head_tokens=head_tokens,
+        tail_tokens=tail_tokens
     )
     
     print("Vectorizing test set...")
     test_input_ids, test_attention_mask, test_unk_pos, test_vec_stats = vectorize_batch_preserve(
-        test_tokens, vocab, max_len
+        test_tokens, vocab, max_len,
+        truncation_strategy=truncation_strategy,
+        head_tokens=head_tokens,
+        tail_tokens=tail_tokens
     )
     
     print(f"\nVectorization Statistics:")
     print(f"  Train: {train_input_ids.shape}, UNK rate: {train_vec_stats['unk_rate']:.2%}")
     print(f"  Val: {val_input_ids.shape}, UNK rate: {val_vec_stats['unk_rate']:.2%}")
     print(f"  Test: {test_input_ids.shape}, UNK rate: {test_vec_stats['unk_rate']:.2%}")
+    print(f"  Truncated samples: train={train_vec_stats.get('truncated_samples', 0)}, "
+          f"val={val_vec_stats.get('truncated_samples', 0)}, "
+          f"test={test_vec_stats.get('truncated_samples', 0)}")
     
     print(f"\nTop UNK tokens (train):")
     for tok, count in train_vec_stats['top_unk_tokens'][:15]:

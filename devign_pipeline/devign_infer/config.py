@@ -3,7 +3,95 @@
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 import json
+import os
 from pathlib import Path
+
+
+def resolve_path(
+    cli_arg: Optional[str] = None,
+    env_var: Optional[str] = None,
+    relative_to_script: Optional[str] = None,
+    default: Optional[str] = None,
+    script_dir: Optional[Path] = None
+) -> Optional[str]:
+    """
+    Resolve file path with priority chain:
+    1. CLI argument (if provided and file exists)
+    2. Environment variable (if set and file exists)
+    3. Relative to script location (if file exists)
+    4. Default path (if file exists)
+    5. Return first non-None path even if doesn't exist (for error reporting)
+    """
+    candidates = []
+    
+    if cli_arg:
+        candidates.append(("CLI argument", cli_arg))
+    
+    if env_var:
+        env_value = os.environ.get(env_var)
+        if env_value:
+            candidates.append((f"ENV {env_var}", env_value))
+    
+    if relative_to_script and script_dir:
+        rel_path = script_dir / relative_to_script
+        candidates.append(("relative to script", str(rel_path)))
+    
+    if default:
+        candidates.append(("default", default))
+    
+    for source, path in candidates:
+        if Path(path).exists():
+            return str(Path(path).resolve())
+    
+    for source, path in candidates:
+        return path
+    
+    return None
+
+
+def find_model_path(
+    cli_arg: Optional[str] = None,
+    script_dir: Optional[Path] = None
+) -> Optional[str]:
+    """Find model path with auto-detection."""
+    return resolve_path(
+        cli_arg=cli_arg,
+        env_var="MODEL_PATH",
+        relative_to_script="../models/best_model.pt",
+        default="models/best_model.pt",
+        script_dir=script_dir
+    )
+
+
+def find_vocab_path(
+    cli_arg: Optional[str] = None,
+    script_dir: Optional[Path] = None
+) -> Optional[str]:
+    """Find vocab path with auto-detection."""
+    return resolve_path(
+        cli_arg=cli_arg,
+        env_var="VOCAB_PATH",
+        relative_to_script="../models/vocab.json",
+        default="models/vocab.json",
+        script_dir=script_dir
+    )
+
+
+def validate_paths(model_path: str, vocab_path: str) -> List[str]:
+    """Validate that required files exist. Returns list of errors."""
+    errors = []
+    
+    if not model_path:
+        errors.append("Model path not specified")
+    elif not Path(model_path).exists():
+        errors.append(f"Model file not found: {model_path}")
+    
+    if not vocab_path:
+        errors.append("Vocab path not specified")
+    elif not Path(vocab_path).exists():
+        errors.append(f"Vocab file not found: {vocab_path}")
+    
+    return errors
 
 
 @dataclass

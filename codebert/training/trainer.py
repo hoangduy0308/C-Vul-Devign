@@ -112,11 +112,10 @@ class CodeBERTTrainer:
         
         self.pos_weight = pos_weight
         if pos_weight is not None:
-            self.criterion = nn.BCEWithLogitsLoss(
-                pos_weight=torch.tensor([pos_weight]).to(self.device)
-            )
+            weight = torch.tensor([1.0, pos_weight]).to(self.device)
+            self.criterion = nn.CrossEntropyLoss(weight=weight)
         else:
-            self.criterion = nn.BCEWithLogitsLoss()
+            self.criterion = nn.CrossEntropyLoss()
         
         self.scaler = GradScaler() if mixed_precision else None
         self.metrics_tracker = MetricsTracker()
@@ -167,16 +166,18 @@ class CodeBERTTrainer:
         for step, batch in enumerate(progress_bar):
             input_ids = batch["input_ids"].to(self.device)
             attention_mask = batch["attention_mask"].to(self.device)
-            labels = batch["labels"].to(self.device).float()
+            labels = batch["labels"].to(self.device).long()
             
             if self.mixed_precision:
                 with autocast():
                     outputs = self.model(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
+                        labels=labels,
                     )
-                    logits = self._get_logits(outputs)
-                    loss = self.criterion(logits.squeeze(-1), labels)
+                    loss, logits = outputs
+                    if hasattr(loss, 'mean'):
+                        loss = loss.mean()
                     loss = loss / self.gradient_accumulation_steps
                 
                 self.scaler.scale(loss).backward()
@@ -184,9 +185,11 @@ class CodeBERTTrainer:
                 outputs = self.model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
+                    labels=labels,
                 )
-                logits = self._get_logits(outputs)
-                loss = self.criterion(logits.squeeze(-1), labels)
+                loss, logits = outputs
+                if hasattr(loss, 'mean'):
+                    loss = loss.mean()
                 loss = loss / self.gradient_accumulation_steps
                 loss.backward()
             
@@ -232,26 +235,29 @@ class CodeBERTTrainer:
             for batch in tqdm(data_loader, desc="Evaluating", leave=False):
                 input_ids = batch["input_ids"].to(self.device)
                 attention_mask = batch["attention_mask"].to(self.device)
-                labels = batch["labels"].to(self.device).float()
+                labels = batch["labels"].to(self.device).long()
                 
                 if self.mixed_precision:
                     with autocast():
                         outputs = self.model(
                             input_ids=input_ids,
                             attention_mask=attention_mask,
+                            labels=labels,
                         )
-                        logits = self._get_logits(outputs)
-                        loss = self.criterion(logits.squeeze(-1), labels)
+                        loss, logits = outputs
                 else:
                     outputs = self.model(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
+                        labels=labels,
                     )
-                    logits = self._get_logits(outputs)
-                    loss = self.criterion(logits.squeeze(-1), labels)
+                    loss, logits = outputs
+                
+                if hasattr(loss, 'mean'):
+                    loss = loss.mean()
                 
                 total_loss += loss.item()
-                probs = torch.sigmoid(logits.squeeze(-1))
+                probs = torch.softmax(logits, dim=-1)[:, 1]
                 all_probs.extend(probs.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
         
