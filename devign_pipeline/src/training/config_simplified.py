@@ -51,9 +51,9 @@ class BaselineConfig:
     weight_decay: float = 1e-4
     
     # ============= LOSS FUNCTION =============
-    # Oracle: Use SINGLE loss strategy - BCEWithLogitsLoss(pos_weight)
-    # DO NOT stack focal + class_weights + label_smoothing
-    loss_type: str = "bce_weighted"  # Options: "bce_weighted", "focal_only"
+    # Oracle: Use SINGLE loss strategy - don't stack multiple
+    # Options: "bce", "bce_weighted", "focal", "focal_alpha"
+    loss_type: str = "bce_weighted"
     
     # For bce_weighted: pos_weight will be computed from data
     # pos_weight = n_negative / n_positive (auto-computed in trainer)
@@ -64,6 +64,15 @@ class BaselineConfig:
     # pos_weight override: Set to 1.0 for balanced data (ratio ~1.18:1)
     # Weighting hurts precision with nearly balanced classes
     pos_weight_override: Optional[float] = 1.0
+    
+    # Focal Loss parameters (used when loss_type="focal" or "focal_alpha")
+    # gamma: Focusing parameter. 0=BCE, 2=typical, 5=aggressive focus on hard examples
+    focal_gamma: float = 2.0
+    # alpha: Class weight for positives (0-1). 
+    #   - alpha < 0.5: down-weight positives (use when model over-predicts positive)
+    #   - alpha > 0.5: up-weight positives (use when model under-predicts positive)
+    #   - None: no class weighting (pure focal loss)
+    focal_alpha: Optional[float] = None
     
     # ============= TRAINING =============
     batch_size: int = 128
@@ -110,9 +119,10 @@ class BaselineConfig:
     
     # ============= THRESHOLD =============
     use_optimal_threshold: bool = True
-    threshold_min: float = 0.3
+    threshold_min: float = 0.2
     threshold_max: float = 0.7
     threshold_step: float = 0.01
+    threshold_optimization_metric: str = 'f1'  # 'f1', 'precision', 'recall', 'balanced'
     
     # ============= VULN FEATURES (optional) =============
     use_vuln_features: bool = False
@@ -221,6 +231,34 @@ def get_large_config() -> BaselineConfig:
     )
 
 
+def get_focal_config() -> BaselineConfig:
+    """
+    Focal Loss focused config.
+    
+    Uses Focal Loss with alpha=0.25 to down-weight positives (for when 
+    model over-predicts positive class) and gamma=2.0 for hard example focus.
+    
+    Recommended when:
+    - Model has high recall but low precision
+    - Want to reduce false positives
+    - Training data has many easy examples dominating the loss
+    """
+    return BaselineConfig().override(
+        # Focal Loss settings
+        loss_type="focal_alpha",
+        focal_gamma=2.0,
+        focal_alpha=0.25,  # Down-weight positives (model over-predicts)
+        
+        # Don't use pos_weight with focal (already has alpha weighting)
+        pos_weight_override=None,
+        
+        # Threshold optimization
+        threshold_optimization_metric='f1',
+        threshold_min=0.20,
+        threshold_max=0.70,
+    )
+
+
 # ============= ABLATION HELPERS =============
 
 def create_ablation_configs(base: BaselineConfig = None) -> Dict[str, BaselineConfig]:
@@ -239,7 +277,11 @@ def create_ablation_configs(base: BaselineConfig = None) -> Dict[str, BaselineCo
         "baseline": base,
         
         # Loss ablations
-        "focal_only": base.override(loss_type="focal_only"),
+        "focal_only": base.override(loss_type="focal"),
+        "focal_alpha_025": base.override(loss_type="focal_alpha", focal_alpha=0.25),
+        "focal_alpha_035": base.override(loss_type="focal_alpha", focal_alpha=0.35),
+        "focal_gamma_1": base.override(loss_type="focal", focal_gamma=1.0),
+        "focal_gamma_3": base.override(loss_type="focal", focal_gamma=3.0),
         "label_smoothing_03": base.override(label_smoothing=0.03),
         
         # Dropout ablations

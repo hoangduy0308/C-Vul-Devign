@@ -50,13 +50,79 @@ logger = logging.getLogger(__name__)
 
 # ============= LOSS FUNCTION =============
 
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for imbalanced classification.
+    
+    Reduces the loss for well-classified examples, focusing training
+    on hard, misclassified examples.
+    
+    Formula: FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+    
+    Args:
+        gamma: Focusing parameter. Higher = more focus on hard examples.
+               gamma=0 is equivalent to BCE. Typical: 1.0-3.0, default 2.0
+        alpha: Class weight for positive class (0-1).
+               alpha > 0.5 increases weight of positives.
+               Set to None for no class weighting.
+        reduction: 'mean', 'sum', or 'none'
+    """
+    def __init__(self, gamma: float = 2.0, alpha: float = None, reduction: str = 'mean'):
+        super().__init__()
+        self.gamma = gamma
+        self.alpha = alpha
+        self.reduction = reduction
+    
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            inputs: Raw logits (before sigmoid), shape (N,) or (N, 1)
+            targets: Binary labels, shape (N,) or (N, 1)
+        """
+        inputs = inputs.view(-1)
+        targets = targets.view(-1).float()
+        
+        # Get probabilities
+        p = torch.sigmoid(inputs)
+        
+        # Compute p_t (probability for the correct class)
+        p_t = p * targets + (1 - p) * (1 - targets)
+        
+        # Compute focal weight: (1 - p_t)^gamma
+        focal_weight = (1 - p_t) ** self.gamma
+        
+        # Compute BCE (without reduction)
+        bce = nn.functional.binary_cross_entropy_with_logits(
+            inputs, targets, reduction='none'
+        )
+        
+        # Apply focal weight
+        focal_loss = focal_weight * bce
+        
+        # Apply alpha weighting if specified
+        if self.alpha is not None:
+            # alpha for positives, (1-alpha) for negatives
+            alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
+            focal_loss = alpha_t * focal_loss
+        
+        # Reduction
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
+
 class SimplifiedLoss(nn.Module):
     """
     Simplified loss function following Oracle recommendations.
     
     Options:
-    1. bce_weighted: BCEWithLogitsLoss with pos_weight (RECOMMENDED)
-    2. focal_only: FocalLoss without class weight stacking
+    1. bce: Plain BCEWithLogitsLoss
+    2. bce_weighted: BCEWithLogitsLoss with pos_weight (RECOMMENDED for imbalanced)
+    3. focal: FocalLoss without alpha weighting
+    4. focal_alpha: FocalLoss with alpha class balancing
     
     DO NOT stack multiple loss modifications together.
     """
@@ -67,22 +133,36 @@ class SimplifiedLoss(nn.Module):
         pos_weight: float = 1.0,
         label_smoothing: float = 0.0,
         focal_gamma: float = 2.0,
+        focal_alpha: float = None,
     ):
         super().__init__()
         self.loss_type = loss_type
         self.label_smoothing = label_smoothing
         self.focal_gamma = focal_gamma
+        self.focal_alpha = focal_alpha
         
-        if loss_type == "bce_weighted":
-            # Oracle recommended: simple BCE with pos_weight
+        if loss_type == "bce":
+            self.criterion = nn.BCEWithLogitsLoss()
+        elif loss_type == "bce_weighted":
             self.criterion = nn.BCEWithLogitsLoss(
                 pos_weight=torch.tensor([pos_weight])
             )
-        elif loss_type == "focal_only":
-            # Alternative: Focal loss without additional weighting
-            self.criterion = None  # Computed manually
+        elif loss_type == "focal" or loss_type == "focal_only":
+            # Focal loss without alpha (pure focus on hard examples)
+            self.criterion = FocalLoss(gamma=focal_gamma, alpha=None)
+        elif loss_type == "focal_alpha":
+            # Focal loss with alpha class balancing
+            # alpha < 0.5 down-weights positives (use when model over-predicts positive)
+            if focal_alpha is None:
+                raise ValueError(
+                    "focal_alpha must be explicitly set when using loss_type='focal_alpha'. "
+                    "Typical values: 0.25 (down-weight positives), 0.5 (balanced), 0.75 (up-weight positives)"
+                )
+            self.criterion = FocalLoss(gamma=focal_gamma, alpha=focal_alpha)
         else:
             raise ValueError(f"Unknown loss_type: {loss_type}")
+        
+        logger.info(f"Loss: {loss_type} (gamma={focal_gamma}, alpha={focal_alpha})")
     
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """
@@ -94,7 +174,6 @@ class SimplifiedLoss(nn.Module):
         """
         # Handle 2-class output
         if logits.dim() == 2 and logits.size(1) == 2:
-            # Use class 1 (vulnerable) logit
             logits = logits[:, 1]
         elif logits.dim() == 2 and logits.size(1) == 1:
             logits = logits.squeeze(1)
@@ -105,21 +184,7 @@ class SimplifiedLoss(nn.Module):
         if self.label_smoothing > 0:
             targets = targets * (1 - self.label_smoothing) + 0.5 * self.label_smoothing
         
-        if self.loss_type == "bce_weighted":
-            return self.criterion(logits, targets)
-        
-        elif self.loss_type == "focal_only":
-            # Focal loss: FL(p_t) = -(1-p_t)^gamma * log(p_t)
-            bce_loss = nn.functional.binary_cross_entropy_with_logits(
-                logits, targets, reduction='none'
-            )
-            probs = torch.sigmoid(logits)
-            p_t = probs * targets + (1 - probs) * (1 - targets)
-            focal_weight = (1 - p_t) ** self.focal_gamma
-            return (focal_weight * bce_loss).mean()
-        
-        else:
-            raise ValueError(f"Unknown loss_type: {self.loss_type}")
+        return self.criterion(logits, targets)
 
 
 def get_probs_from_logits(logits: torch.Tensor) -> torch.Tensor:

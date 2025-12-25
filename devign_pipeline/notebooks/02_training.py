@@ -56,6 +56,7 @@ from src.training.config_simplified import (
     get_recall_focused_config,
     get_precision_focused_config,
     get_large_config,
+    get_focal_config,
     get_seeds_for_evaluation,
 )
 from src.training.train_simplified import (
@@ -487,19 +488,112 @@ class EarlyStopping:
 def find_optimal_threshold(
     labels: np.ndarray, 
     probs: np.ndarray,
-    min_t: float = 0.3,
-    max_t: float = 0.7,
+    metric: str = 'f1',
+    min_t: float = 0.2,
+    max_t: float = 0.8,
     step: float = 0.01
-) -> Tuple[float, float]:
-    """Find threshold that maximizes F1."""
-    best_t, best_f1 = 0.5, 0.0
-    for t in np.arange(min_t, max_t + step, step):
-        preds = (probs >= t).astype(int)
+) -> Tuple[float, float, List[Dict]]:
+    """Find optimal threshold for classification.
+    
+    Args:
+        labels: Ground truth labels
+        probs: Predicted probabilities
+        metric: 'f1', 'precision', 'recall', or 'balanced' (geometric mean of P and R)
+        min_t, max_t, step: Search range
+    
+    Returns:
+        best_threshold, best_score, results_list
+    """
+    thresholds = np.arange(min_t, max_t + step, step)
+    results = []
+    
+    for thresh in thresholds:
+        preds = (probs >= thresh).astype(int)
+        
+        if preds.sum() == 0 or preds.sum() == len(preds):
+            continue
+            
+        p = precision_score(labels, preds, zero_division=0)
+        r = recall_score(labels, preds, zero_division=0)
         f1 = f1_score(labels, preds, zero_division=0)
-        if f1 > best_f1:
-            best_f1 = f1
-            best_t = t
-    return best_t, best_f1
+        
+        if metric == 'f1':
+            score = f1
+        elif metric == 'precision':
+            score = p
+        elif metric == 'recall':
+            score = r
+        elif metric == 'balanced':
+            score = np.sqrt(p * r) if p > 0 and r > 0 else 0.0
+        else:
+            score = f1
+            
+        results.append({
+            'threshold': float(thresh),
+            'precision': float(p),
+            'recall': float(r),
+            'f1': float(f1),
+            'score': float(score)
+        })
+    
+    if not results:
+        return 0.5, 0.0, []
+    
+    best = max(results, key=lambda x: x['score'])
+    return best['threshold'], best['score'], results
+
+
+def get_metrics_at_threshold(labels: np.ndarray, probs: np.ndarray, threshold: float) -> Dict[str, float]:
+    """Compute metrics at a specific threshold."""
+    preds = (probs >= threshold).astype(int)
+    return {
+        'threshold': threshold,
+        'precision': precision_score(labels, preds, zero_division=0),
+        'recall': recall_score(labels, preds, zero_division=0),
+        'f1': f1_score(labels, preds, zero_division=0),
+        'accuracy': accuracy_score(labels, preds),
+    }
+
+
+def plot_threshold_analysis(results: List[Dict], optimal_threshold: float, save_path: str = None):
+    """Plot precision, recall, F1 vs threshold."""
+    if not results:
+        return
+    
+    thresholds = [r['threshold'] for r in results]
+    precisions = [r['precision'] for r in results]
+    recalls = [r['recall'] for r in results]
+    f1s = [r['f1'] for r in results]
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    ax.plot(thresholds, precisions, 'b-', linewidth=2, label='Precision')
+    ax.plot(thresholds, recalls, 'g-', linewidth=2, label='Recall')
+    ax.plot(thresholds, f1s, 'r-', linewidth=2, label='F1 Score')
+    
+    ax.axvline(x=optimal_threshold, color='purple', linestyle='--', linewidth=2, 
+               label=f'Optimal Threshold ({optimal_threshold:.2f})')
+    ax.axvline(x=0.5, color='gray', linestyle=':', linewidth=1.5, 
+               label='Default (0.5)')
+    
+    ax.set_xlabel('Threshold', fontsize=12)
+    ax.set_ylabel('Score', fontsize=12)
+    ax.set_title('Precision-Recall-F1 vs Threshold', fontsize=14, fontweight='bold')
+    ax.legend(loc='best')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim([min(thresholds), max(thresholds)])
+    ax.set_ylim([0, 1])
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+        print(f"  Saved threshold analysis: {save_path}")
+    
+    # Only show in interactive environments (not headless servers)
+    if plt.isinteractive() or 'inline' in plt.get_backend().lower():
+        plt.show()
+    plt.close()
 
 
 @torch.no_grad()
@@ -621,9 +715,22 @@ def evaluate(
     loader: DataLoader,
     criterion: nn.Module,
     config: BaselineConfig,
-    device: torch.device
+    device: torch.device,
+    return_threshold_analysis: bool = False
 ) -> Dict[str, Any]:
-    """Evaluate model with optimal threshold search."""
+    """Evaluate model with optimal threshold search.
+    
+    Args:
+        model: Model to evaluate
+        loader: DataLoader for evaluation
+        criterion: Loss function
+        config: Configuration with threshold settings
+        device: Device to use
+        return_threshold_analysis: If True, include threshold analysis results
+    
+    Returns:
+        Dict with metrics, optionally including threshold analysis
+    """
     model.eval()
     total_loss = 0.0
     all_probs, all_labels = [], []
@@ -651,31 +758,45 @@ def evaluate(
     all_probs = np.array(all_probs)
     all_labels = np.array(all_labels)
     
-    # Find optimal threshold
-    best_t, best_f1 = find_optimal_threshold(
+    try:
+        auc = roc_auc_score(all_labels, all_probs)
+    except ValueError:
+        # Happens when only one class is present in batch
+        auc = 0.5
+    
+    optimization_metric = getattr(config, 'threshold_optimization_metric', 'f1')
+    
+    best_t, best_score, threshold_results = find_optimal_threshold(
         all_labels, all_probs,
+        metric=optimization_metric,
         min_t=config.threshold_min,
         max_t=config.threshold_max,
         step=config.threshold_step
     )
     
-    preds = (all_probs >= best_t).astype(int)
+    preds_optimal = (all_probs >= best_t).astype(int)
     
-    try:
-        auc = roc_auc_score(all_labels, all_probs)
-    except:
-        auc = 0.5
+    default_metrics = get_metrics_at_threshold(all_labels, all_probs, 0.5)
     
-    return {
+    result = {
         'loss': avg_loss,
-        'f1': best_f1,
-        'precision': precision_score(all_labels, preds, zero_division=0),
-        'recall': recall_score(all_labels, preds, zero_division=0),
+        'f1': f1_score(all_labels, preds_optimal, zero_division=0),
+        'precision': precision_score(all_labels, preds_optimal, zero_division=0),
+        'recall': recall_score(all_labels, preds_optimal, zero_division=0),
         'auc': auc,
         'threshold': best_t,
         'probs': all_probs,
         'labels': all_labels,
+        'default_f1': default_metrics['f1'],
+        'default_precision': default_metrics['precision'],
+        'default_recall': default_metrics['recall'],
+        'f1_improvement': f1_score(all_labels, preds_optimal, zero_division=0) - default_metrics['f1'],
     }
+    
+    if return_threshold_analysis:
+        result['threshold_analysis'] = threshold_results
+    
+    return result
 
 
 def set_seed(seed: int):
@@ -917,6 +1038,8 @@ def train_single_seed(
         loss_type=config.loss_type,
         pos_weight=pos_weight,
         label_smoothing=config.label_smoothing,
+        focal_gamma=getattr(config, 'focal_gamma', 2.0),
+        focal_alpha=getattr(config, 'focal_alpha', None),
     ).to(DEVICE)
     
     # Optimizer with differential LR for pretrained embeddings
@@ -1115,7 +1238,12 @@ def train_multi_seed(
     # Create criterion for test eval
     test_labels = test_loader.dataset.labels
     pos_weight = get_pos_weight_for_config(config, test_labels)
-    criterion = SimplifiedLoss(loss_type=config.loss_type, pos_weight=pos_weight).to(DEVICE)
+    criterion = SimplifiedLoss(
+        loss_type=config.loss_type, 
+        pos_weight=pos_weight,
+        focal_gamma=getattr(config, 'focal_gamma', 2.0),
+        focal_alpha=getattr(config, 'focal_alpha', None),
+    ).to(DEVICE)
     
     test_metrics = evaluate(best_model, test_loader, criterion, config, DEVICE)
     print(f"Test: F1={test_metrics['f1']:.4f} P={test_metrics['precision']:.4f} "
@@ -1162,6 +1290,7 @@ def main(
         "recall_focused": get_recall_focused_config,
         "precision_focused": get_precision_focused_config,
         "large": get_large_config,
+        "focal": get_focal_config,
     }
     
     if config_name not in config_getters:
@@ -1215,11 +1344,31 @@ def main(
         # Evaluate on test set and plot confusion matrix
         test_labels = test_loader.dataset.labels
         pos_weight = get_pos_weight_for_config(config, test_labels)
-        criterion = SimplifiedLoss(loss_type=config.loss_type, pos_weight=pos_weight).to(DEVICE)
-        test_metrics = evaluate(model, test_loader, criterion, config, DEVICE)
+        criterion = SimplifiedLoss(
+            loss_type=config.loss_type, 
+            pos_weight=pos_weight,
+            focal_gamma=getattr(config, 'focal_gamma', 2.0),
+            focal_alpha=getattr(config, 'focal_alpha', None),
+        ).to(DEVICE)
+        test_metrics = evaluate(model, test_loader, criterion, config, DEVICE, return_threshold_analysis=True)
         
-        print(f"Test: F1={test_metrics['f1']:.4f} P={test_metrics['precision']:.4f} "
-              f"R={test_metrics['recall']:.4f} AUC={test_metrics['auc']:.4f}")
+        print(f"\n{'='*60}")
+        print("TEST SET EVALUATION - Threshold Analysis")
+        print(f"{'='*60}")
+        print(f"  Optimal threshold: {test_metrics['threshold']:.3f}")
+        print(f"  Optimized:  F1={test_metrics['f1']:.4f} P={test_metrics['precision']:.4f} R={test_metrics['recall']:.4f}")
+        print(f"  Default@0.5: F1={test_metrics['default_f1']:.4f} P={test_metrics['default_precision']:.4f} R={test_metrics['default_recall']:.4f}")
+        print(f"  F1 improvement: {test_metrics['f1_improvement']:+.4f}")
+        print(f"  AUC: {test_metrics['auc']:.4f}")
+        print(f"{'='*60}")
+        
+        if 'threshold_analysis' in test_metrics:
+            threshold_plot_path = os.path.join(PLOT_DIR, f'threshold_analysis_seed{seed}.png')
+            plot_threshold_analysis(
+                test_metrics['threshold_analysis'],
+                test_metrics['threshold'],
+                save_path=threshold_plot_path
+            )
         
         # Plot confusion matrix for test set
         test_preds = (test_metrics['probs'] >= test_metrics['threshold']).astype(int)
@@ -1278,7 +1427,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Devign Training V2")
     parser.add_argument("--config", type=str, default="baseline",
-                        choices=["baseline", "recall_focused", "precision_focused", "large"])
+                        choices=["baseline", "recall_focused", "precision_focused", "large", "focal"])
     parser.add_argument("--seeds", type=int, default=3)
     parser.add_argument("--data-dir", type=str, default=None)
     
