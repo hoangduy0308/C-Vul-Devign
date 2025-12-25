@@ -31,11 +31,12 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Device: {DEVICE}, GPUs: {torch.cuda.device_count()}")
 
 # ===== CONFIGURATION =====
-NUM_SEEDS = 1  # Single model (set to 3 for multi-seed ensemble)
+NUM_SEEDS = 3  # Multi-seed ensemble for better AUC
 POS_WEIGHT_SCALE = 1.12  # Oracle recommendation: 1.08-1.16
 GATE_INIT = 0.4  # Initial gate strength (bounded) - increased for feature gating
-FOCAL_GAMMA = 2.0  # Focal loss gamma (range 1.5-3.0, higher = more focus on hard examples)
-FOCAL_ALPHA_SCALE = 1.0  # Multiplier for focal loss alpha
+FOCAL_GAMMA = 1.5  # Reduced from 2.0 to improve recall
+FOCAL_ALPHA_SCALE = 1.4  # Increased to prioritize positive class (reduce FN)
+MAX_EPOCHS = 24  # Reduced from 30 to avoid overfitting
 
 # Load config
 with open(f'{DATA_DIR}/config.json') as f:
@@ -295,6 +296,7 @@ def train_single_model(seed, train_ds, val_ds, n_neg, n_pos, data_config):
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=2, factor=0.5)
     scaler = GradScaler()
     
+    best_val_loss = float('inf')
     best_f1, patience_counter = 0, 0
     EARLY_STOP_PATIENCE = 4  # Dừng sớm hơn để tránh overfitting
     model_path = f'{MODEL_DIR}/best_v2_seed{seed}.pt'
@@ -306,8 +308,8 @@ def train_single_model(seed, train_ds, val_ds, n_neg, n_pos, data_config):
         'val_opt_f1': [], 'val_prec': [], 'val_rec': []
     }
     
-    for epoch in range(1, 31):
-        print(f"\n{'='*50}\nEpoch {epoch}/30 (seed={seed})")
+    for epoch in range(1, MAX_EPOCHS + 1):
+        print(f"\n{'='*50}\nEpoch {epoch}/{MAX_EPOCHS} (seed={seed})")
         train_m = train_epoch(model, train_loader, criterion, optimizer, scaler)
         val_m = evaluate(model, val_loader, criterion)
         scheduler.step(val_m['opt_f1'])
@@ -325,13 +327,25 @@ def train_single_model(seed, train_ds, val_ds, n_neg, n_pos, data_config):
         history['val_prec'].append(val_m['opt_prec'])
         history['val_rec'].append(val_m['opt_rec'])
         
-        if val_m['opt_f1'] > best_f1:
-            best_f1 = val_m['opt_f1']; patience_counter = 0
+        # Early stopping: val_loss as primary criterion, val_opt_f1 as tie-breaker
+        curr_val_loss = val_m['loss']
+        curr_opt_f1 = val_m['opt_f1']
+        
+        improved = False
+        if curr_val_loss < best_val_loss - 1e-3:
+            improved = True
+        elif curr_val_loss <= best_val_loss + 1e-3 and curr_opt_f1 > best_f1:
+            improved = True
+        
+        if improved:
+            best_val_loss = curr_val_loss
+            best_f1 = curr_opt_f1
+            patience_counter = 0
             torch.save(model.state_dict(), model_path)
-            print(f"★ Best F1: {best_f1:.4f}")
+            print(f"★ Best loss: {best_val_loss:.4f}, F1: {best_f1:.4f}")
         else:
             patience_counter += 1
-            if patience_counter >= EARLY_STOP_PATIENCE: 
+            if patience_counter >= EARLY_STOP_PATIENCE:
                 print(f"Early stop at epoch {epoch}!")
                 break
     
@@ -383,12 +397,29 @@ calibrator.fit(val_probs_ens, val_labels)
 val_probs_cal = calibrator.predict(val_probs_ens)
 test_probs_cal = calibrator.predict(test_probs_ens)
 
-# Find optimal threshold on calibrated validation predictions
-best_f1, best_t = 0, 0.5
-for t in np.arange(0.25, 0.75, 0.01):
-    f1 = f1_score(val_labels, (val_probs_cal >= t).astype(int))
-    if f1 > best_f1: best_f1, best_t = f1, t
-print(f"Validation (ensemble+calibrated): OptF1={best_f1:.4f} at t={best_t:.2f}")
+# Find optimal threshold using Fβ (β=1.5) with precision constraint
+THRESHOLD_BETA = 1.5  # Prioritize recall over precision
+MIN_PRECISION = 0.78  # Minimum acceptable precision
+
+best_fbeta, best_t = 0, 0.5
+for t in np.arange(0.20, 0.80, 0.01):
+    preds = (val_probs_cal >= t).astype(int)
+    prec = precision_score(val_labels, preds, zero_division=0)
+    rec = recall_score(val_labels, preds, zero_division=0)
+    if prec < MIN_PRECISION:
+        continue  # Skip thresholds that violate precision constraint
+    fbeta = (1 + THRESHOLD_BETA**2) * prec * rec / (THRESHOLD_BETA**2 * prec + rec + 1e-8)
+    if fbeta > best_fbeta:
+        best_fbeta, best_t = fbeta, t
+
+# Fallback to standard F1 if no threshold meets precision constraint
+if best_fbeta == 0:
+    print("Warning: No threshold meets precision constraint, using F1 optimization")
+    for t in np.arange(0.25, 0.75, 0.01):
+        f1 = f1_score(val_labels, (val_probs_cal >= t).astype(int))
+        if f1 > best_fbeta: best_fbeta, best_t = f1, t
+
+print(f"Validation (ensemble+calibrated): F{THRESHOLD_BETA}={best_fbeta:.4f} at t={best_t:.2f} (min_prec={MIN_PRECISION})")
 
 # Evaluate on test set
 test_preds_cal = (test_probs_cal >= best_t).astype(int)
@@ -403,8 +434,10 @@ test_auc = roc_auc_score(test_labels, test_probs_cal)
 print(f"\n{'='*60}")
 print(f"FINAL TEST RESULTS (Ensemble + Calibration)")
 print(f"{'='*60}")
+test_fbeta_opt = (1 + THRESHOLD_BETA**2) * test_prec * test_rec / (THRESHOLD_BETA**2 * test_prec + test_rec + 1e-8)
 print(f"Test F1 (t=0.5): {test_f1_05:.4f}")
-print(f"Test OptF1 (t={best_t:.2f}): {test_f1_opt:.4f}")
+print(f"Test F{THRESHOLD_BETA} (t={best_t:.2f}): {test_fbeta_opt:.4f}")
+print(f"Test F1 (t={best_t:.2f}): {test_f1_opt:.4f}")
 print(f"Test Precision: {test_prec:.4f}")
 print(f"Test Recall: {test_rec:.4f}")
 print(f"Test AUC: {test_auc:.4f}")
@@ -423,7 +456,7 @@ axes[0].set_xlabel('Predicted'); axes[0].set_ylabel('Actual')
 cm2 = confusion_matrix(test_labels, test_preds_cal)
 sns.heatmap(cm2, annot=True, fmt='d', cmap='Greens', ax=axes[1],
             xticklabels=['Non-Vuln', 'Vuln'], yticklabels=['Non-Vuln', 'Vuln'])
-axes[1].set_title(f'Confusion Matrix (t={best_t:.2f})\nOptF1={test_f1_opt:.4f}')
+axes[1].set_title(f'Confusion Matrix (t={best_t:.2f})\nF{THRESHOLD_BETA}={test_fbeta_opt:.4f}')
 axes[1].set_xlabel('Predicted'); axes[1].set_ylabel('Actual')
 
 plt.tight_layout()

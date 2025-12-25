@@ -1,0 +1,5 @@
+models/*.pt filter=lfs diff=lfs merge=lfs -text
+models/*.pth filter=lfs diff=lfs merge=lfs -text
+models/best_v2_seed42.pt filter=lfs diff=lfs merge=lfs -text
+models/best_v2_seed1042.pt filter=lfs diff=lfs merge=lfs -text
+models/best_v2_seed2042.pt filter=lfs diff=lfs merge=lfs -text
