@@ -143,7 +143,14 @@ C_KEYWORDS = {
     'inline', 'int', 'long', 'register', 'restrict', 'return', 'short',
     'signed', 'sizeof', 'static', 'struct', 'switch', 'typedef', 'union',
     'unsigned', 'void', 'volatile', 'while', '_Bool', '_Complex', '_Imaginary',
-    'NULL', 'true', 'false', 'nullptr'
+    'NULL', 'true', 'false', 'nullptr',
+    # Common C/POSIX typedefs - preserved for type cast detection (e.g., (uint8_t)-1)
+    'uint8_t', 'uint16_t', 'uint32_t', 'uint64_t',
+    'int8_t', 'int16_t', 'int32_t', 'int64_t',
+    'size_t', 'ssize_t', 'ptrdiff_t', 'intptr_t', 'uintptr_t',
+    'off_t', 'time_t', 'pid_t', 'uid_t', 'gid_t',
+    'socklen_t', 'mode_t', 'dev_t', 'ino_t', 'nlink_t',
+    'blksize_t', 'blkcnt_t', 'clock_t', 'useconds_t', 'suseconds_t',
 }
 
 NORMALIZED_TOKENS = {

@@ -22,6 +22,15 @@ from .preserve_tokenizer import (
     PRESERVED_OCTAL,
     DEFAULT_CONFIG as PRESERVE_TOKENIZER_CONFIG,
 )
+from .optimized_tokenizer import (
+    OptimizedHybridTokenizer,
+    build_optimized_vocab,
+    vectorize_optimized,
+    API_FAMILIES,
+    DEFENSE_FAMILIES,
+    SEMANTIC_BUCKETS,
+    UNIVERSAL_DANGEROUS,
+)
 
 __all__ = [
     "Tokenizer",
@@ -46,4 +55,12 @@ __all__ = [
     "PRESERVED_HEX",
     "PRESERVED_OCTAL",
     "PRESERVE_TOKENIZER_CONFIG",
+    # Optimized tokenizer
+    "OptimizedHybridTokenizer",
+    "build_optimized_vocab",
+    "vectorize_optimized",
+    "API_FAMILIES",
+    "DEFENSE_FAMILIES",
+    "SEMANTIC_BUCKETS",
+    "UNIVERSAL_DANGEROUS",
 ]

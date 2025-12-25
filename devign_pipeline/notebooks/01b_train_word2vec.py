@@ -9,8 +9,13 @@
 # 3. Train Word2Vec with skip-gram
 # 4. Create embedding matrix for PyTorch
 # 5. Save model and embedding matrix
+#
+# **Usage**:
+# - Standalone: `python 01b_train_word2vec.py`
+# - As import: Functions are in `src.embeddings.word2vec`
 
 # %%
+import sys
 import json
 import numpy as np
 from pathlib import Path
@@ -19,6 +24,21 @@ import logging
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Add pipeline root to path for imports
+NOTEBOOK_DIR = Path(__file__).parent if '__file__' in dir() else Path.cwd()
+PIPELINE_ROOT = NOTEBOOK_DIR.parent if NOTEBOOK_DIR.name == 'notebooks' else NOTEBOOK_DIR
+sys.path.insert(0, str(PIPELINE_ROOT))
+
+# Import from src.embeddings
+from src.embeddings.word2vec import (
+    train_word2vec,
+    create_embedding_matrix,
+    save_word2vec_outputs,
+    tokens_from_input_ids,
+    print_similar_words,
+    DEFAULT_W2V_CONFIG,
+)
 
 
 def detect_environment() -> Tuple[Path, Path]:
@@ -42,16 +62,15 @@ def detect_environment() -> Tuple[Path, Path]:
                 logger.info(f"Found data at: {data_dir}")
                 break
         if data_dir is None:
-            # Fallback - list available files for debugging
             logger.error("Could not find vocab.json. Available paths:")
             for p in kaggle_input.iterdir():
                 logger.error(f"  {p}")
             data_dir = kaggle_input / 'devign-final'
         output_dir = kaggle_working
     else:
-        logger.info("Running locally (Windows)")
-        data_dir = Path('f:/Work/C Vul Devign/Dataset/devign_final')
-        output_dir = data_dir
+        logger.info("Running locally")
+        data_dir = PIPELINE_ROOT.parent / 'output' / 'processed'
+        output_dir = data_dir.parent
     
     return data_dir, output_dir
 
@@ -78,19 +97,7 @@ def load_tokenized_sequences(npz_path: Path, id_to_token: Dict[int, str]) -> Lis
     
     logger.info(f"Loaded {len(input_ids)} sequences, shape: {input_ids.shape}")
     
-    token_sequences = []
-    pad_id = 0
-    
-    for seq in input_ids:
-        tokens = []
-        for token_id in seq:
-            if token_id == pad_id:
-                continue
-            token = id_to_token.get(token_id, '<UNK>')
-            if token not in ['PAD', 'BOS', 'EOS']:
-                tokens.append(token)
-        if tokens:
-            token_sequences.append(tokens)
+    token_sequences = tokens_from_input_ids(input_ids, id_to_token, skip_special=True)
     
     logger.info(f"Converted {len(token_sequences)} non-empty sequences")
     
@@ -100,156 +107,8 @@ def load_tokenized_sequences(npz_path: Path, id_to_token: Dict[int, str]) -> Lis
     return token_sequences
 
 
-def train_word2vec(
-    sentences: List[List[str]],
-    vector_size: int = 128,
-    window: int = 5,
-    min_count: int = 2,
-    epochs: int = 20,
-    seed: int = 42
-):
-    """Train Word2Vec model on token sequences."""
-    try:
-        from gensim.models import Word2Vec
-    except ImportError:
-        logger.error("gensim not installed. Run: pip install gensim")
-        raise
-    
-    logger.info("Training Word2Vec model...")
-    logger.info(f"  vector_size={vector_size}, window={window}, min_count={min_count}")
-    logger.info(f"  epochs={epochs}, skip-gram=True, negative=10")
-    
-    model = Word2Vec(
-        sentences=sentences,
-        vector_size=vector_size,
-        window=window,
-        min_count=min_count,
-        sg=1,
-        negative=10,
-        epochs=epochs,
-        workers=4,
-        seed=seed
-    )
-    
-    logger.info(f"Word2Vec vocabulary size: {len(model.wv)}")
-    
-    return model
-
-
-def create_embedding_matrix(
-    model,
-    token_to_id: Dict[str, int],
-    vocab_size: int = 30000,
-    embed_dim: int = 128
-) -> Tuple[np.ndarray, Dict]:
-    """Create embedding matrix from Word2Vec model."""
-    logger.info(f"Creating embedding matrix: ({vocab_size}, {embed_dim})")
-    
-    embedding_matrix = np.zeros((vocab_size, embed_dim), dtype=np.float32)
-    
-    all_vectors = model.wv.vectors
-    mean_vector = np.mean(all_vectors, axis=0)
-    std_vector = np.std(all_vectors, axis=0).mean()
-    
-    found_count = 0
-    oov_count = 0
-    special_tokens = {'PAD': 0, 'UNK': 1, 'BOS': 2, 'EOS': 3, 'SEP': 4}
-    
-    for token, idx in token_to_id.items():
-        if idx >= vocab_size:
-            continue
-        
-        if token == 'PAD':
-            embedding_matrix[idx] = np.zeros(embed_dim)
-        elif token == 'UNK':
-            embedding_matrix[idx] = mean_vector
-        elif token in special_tokens:
-            np.random.seed(42 + idx)
-            embedding_matrix[idx] = np.random.normal(0, std_vector * 0.1, embed_dim)
-        elif token in model.wv:
-            embedding_matrix[idx] = model.wv[token]
-            found_count += 1
-        else:
-            embedding_matrix[idx] = mean_vector + np.random.normal(0, std_vector * 0.1, embed_dim)
-            oov_count += 1
-    
-    coverage = found_count / (vocab_size - len(special_tokens)) * 100
-    
-    stats = {
-        'vocab_size': vocab_size,
-        'embed_dim': embed_dim,
-        'found_in_w2v': found_count,
-        'oov_tokens': oov_count,
-        'coverage_percent': coverage,
-        'w2v_vocab_size': len(model.wv)
-    }
-    
-    logger.info(f"Embedding matrix stats:")
-    logger.info(f"  Found in Word2Vec: {found_count} ({coverage:.1f}%)")
-    logger.info(f"  OOV tokens: {oov_count}")
-    
-    return embedding_matrix, stats
-
-
-def print_similar_words(model, test_words: List[str], topn: int = 5):
-    """Print similar words for key tokens."""
-    logger.info("\nSimilar words for key tokens:")
-    
-    for word in test_words:
-        if word in model.wv:
-            similar = model.wv.most_similar(word, topn=topn)
-            similar_str = ', '.join([f"{w}({s:.2f})" for w, s in similar])
-            logger.info(f"  {word}: {similar_str}")
-        else:
-            logger.info(f"  {word}: <not in vocabulary>")
-
-
-def save_outputs(
-    model,
-    embedding_matrix: np.ndarray,
-    stats: Dict,
-    output_dir: Path,
-    config_path: Path,
-    source_config_path: Path = None
-):
-    """Save Word2Vec model, embedding matrix, and update config."""
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    model_path = output_dir / 'word2vec.model'
-    model.save(str(model_path))
-    logger.info(f"Saved Word2Vec model to {model_path}")
-    
-    matrix_path = output_dir / 'embedding_matrix.npy'
-    np.save(matrix_path, embedding_matrix)
-    logger.info(f"Saved embedding matrix to {matrix_path}")
-    logger.info(f"  Shape: {embedding_matrix.shape}, dtype: {embedding_matrix.dtype}")
-    
-    # Load from source config (input dir) if exists, otherwise start fresh
-    config = {}
-    if source_config_path and source_config_path.exists():
-        with open(source_config_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-    elif config_path.exists():
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-    
-    config['word2vec'] = {
-        'vector_size': stats['embed_dim'],
-        'vocab_size': stats['vocab_size'],
-        'w2v_vocab_size': stats['w2v_vocab_size'],
-        'coverage_percent': stats['coverage_percent'],
-        'found_in_w2v': stats['found_in_w2v'],
-        'oov_tokens': stats['oov_tokens']
-    }
-    
-    with open(config_path, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=2)
-    logger.info(f"Updated config at {config_path}")
-
-
 def main():
-    """Main training function."""
+    """Main training function for standalone execution."""
     logger.info("=" * 60)
     logger.info("Word2Vec Training for Devign Vulnerability Detection")
     logger.info("=" * 60)
@@ -258,8 +117,8 @@ def main():
     
     vocab_path = data_dir / 'vocab.json'
     train_npz_path = data_dir / 'train.npz'
-    source_config_path = data_dir / 'config.json'  # Read from input (read-only)
-    config_path = output_dir / 'config.json'  # Save to output_dir (writable)
+    source_config_path = data_dir / 'config.json'
+    config_path = output_dir / 'config.json'
     
     for path in [vocab_path, train_npz_path]:
         if not path.exists():
@@ -278,11 +137,8 @@ def main():
     
     model = train_word2vec(
         sentences=token_sequences,
-        vector_size=128,
-        window=5,
-        min_count=2,
-        epochs=20,
-        seed=42
+        config=DEFAULT_W2V_CONFIG,
+        vocab=token_to_id
     )
     
     test_words = ['malloc', 'memcpy', 'free', 'if', 'for', 'return', 'NULL', 'strlen', 'buffer', 'size']
@@ -291,11 +147,20 @@ def main():
     embedding_matrix, stats = create_embedding_matrix(
         model=model,
         token_to_id=token_to_id,
-        vocab_size=30000,
-        embed_dim=128
+        vocab_size=len(token_to_id),
+        embed_dim=DEFAULT_W2V_CONFIG['vector_size']
     )
     
-    save_outputs(model, embedding_matrix, stats, output_dir, config_path, source_config_path)
+    save_word2vec_outputs(
+        model=model,
+        embedding_matrix=embedding_matrix,
+        stats=stats,
+        output_dir=output_dir,
+        save_model=True,
+        update_config=True,
+        config_path=config_path,
+        source_config_path=source_config_path
+    )
     
     logger.info("\n" + "=" * 60)
     logger.info("Training complete!")

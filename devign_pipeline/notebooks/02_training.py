@@ -427,6 +427,59 @@ def load_pretrained_embedding(config: BaselineConfig, data_dir: str) -> Optional
         return None
 
 
+def load_vocab_size_from_data(data_dir: str, tokenizer_type: Optional[str] = None) -> int:
+    """Load vocab_size from config.json or vocab.json in data directory.
+    
+    Args:
+        data_dir: Path to the preprocessed data directory
+        tokenizer_type: Optional hint for fallback size ('optimized', 'preserve', 'canonical')
+    
+    Returns:
+        Vocabulary size
+    """
+    detected_tokenizer_type = tokenizer_type
+    
+    # Try config.json first
+    config_path = os.path.join(data_dir, 'config.json')
+    if os.path.exists(config_path):
+        with open(config_path, 'r') as f:
+            data_config = json.load(f)
+        if 'vocab_size' in data_config:
+            return data_config['vocab_size']
+        # Extract tokenizer_type for fallback if not provided
+        if detected_tokenizer_type is None:
+            detected_tokenizer_type = data_config.get('tokenizer_type')
+    
+    # Try vocab.json
+    vocab_path = os.path.join(data_dir, 'vocab.json')
+    if os.path.exists(vocab_path):
+        with open(vocab_path, 'r') as f:
+            vocab = json.load(f)
+        return len(vocab)
+    
+    # Fallback based on tokenizer type
+    fallback_sizes = {
+        'optimized': 2500,
+        'preserve': 10000,
+        'canonical': 15000,
+    }
+    
+    if detected_tokenizer_type in fallback_sizes:
+        fallback = fallback_sizes[detected_tokenizer_type]
+        print(f"Warning: Could not determine vocab_size from data. "
+              f"Using fallback {fallback} for tokenizer_type='{detected_tokenizer_type}'")
+        return fallback
+    
+    # Unknown tokenizer type - use conservative fallback with strong warning
+    print("=" * 60)
+    print("ERROR: Could not determine vocab_size and tokenizer_type is unknown!")
+    print("This may cause embedding dimension mismatches.")
+    print("Please ensure config.json or vocab.json exists in:", data_dir)
+    print("Using fallback vocab_size=10000 (may be incorrect)")
+    print("=" * 60)
+    return 10000
+
+
 def build_model(config: BaselineConfig, pretrained_embedding: Optional[np.ndarray] = None) -> nn.Module:
     """Build and initialize model."""
     model = ImprovedHybridBiGRUVulnDetector(config)
@@ -445,6 +498,11 @@ def build_model(config: BaselineConfig, pretrained_embedding: Optional[np.ndarra
     
     params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model: {params:,} params, hidden={config.hidden_dim}, layers={config.num_layers}")
+    
+    # Log embedding layer size for debugging dimension mismatches
+    actual_model = model.module if isinstance(model, nn.DataParallel) else model
+    emb_shape = actual_model.embedding.weight.shape
+    print(f"Embedding layer: vocab_size={emb_shape[0]}, embed_dim={emb_shape[1]}")
     
     return model
 
@@ -1298,9 +1356,16 @@ def main(
     
     config = config_getters[config_name]()
     
+    # Load vocab_size from data and update config
+    actual_vocab_size = load_vocab_size_from_data(data_dir)
+    if actual_vocab_size != config.vocab_size:
+        print(f"Updating vocab_size: {config.vocab_size} -> {actual_vocab_size}")
+        config = config.override(vocab_size=actual_vocab_size)
+    
     print(f"{'='*60}")
     print(f"CONFIG: {config_name}")
     print(f"{'='*60}")
+    print(f"  vocab_size: {config.vocab_size}")
     print(f"  hidden_dim: {config.hidden_dim}")
     print(f"  num_layers: {config.num_layers}")
     print(f"  loss_type: {config.loss_type}")

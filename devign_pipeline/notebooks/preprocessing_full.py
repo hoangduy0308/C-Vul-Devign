@@ -64,10 +64,12 @@ except ImportError:
 # MAIN CONFIGURATION - Edit these values as needed
 # ============================================================
 
-# Tokenizer choice: 'preserve' or 'canonical'
+# Tokenizer choice: 'preserve', 'canonical', or 'optimized'
 # - 'preserve': PreserveIdentifierTokenizer (vocab 30k, keeps variable names)
 # - 'canonical': CanonicalTokenizer (vocab 500, semantic buckets BUF_k/LEN_k/etc.)
-TOKENIZER_TYPE = 'preserve'
+# - 'optimized': OptimizedHybridTokenizer (vocab ~2k, API families + semantic buckets)
+#                Best for reducing overfitting while preserving vulnerability semantics
+TOKENIZER_TYPE = 'optimized'
 
 # PDG-based slicing configuration
 # Fixed: criterion clustering + separator + token budget enforcement
@@ -122,7 +124,18 @@ if TOKENIZER_TYPE == 'preserve':
             'keep_permissions': True,
         },
         
-        # Truncation strategy (NEW)
+        # Truncation strategy
+        'truncation_strategy': 'head_tail',
+        'head_tokens': 192,
+        'tail_tokens': 319,
+    }
+elif TOKENIZER_TYPE == 'optimized':
+    TOKENIZER_CONFIG = {
+        'min_freq': 2,
+        'max_vocab_size': 2000,  # Much smaller vocab (API families + semantic buckets)
+        'max_seq_length': 512,
+        
+        # Truncation strategy
         'truncation_strategy': 'head_tail',
         'head_tokens': 192,
         'tail_tokens': 319,
@@ -151,8 +164,8 @@ FEATURE_CONFIG = {
 
 # Debug output configuration
 DEBUG_CONFIG = {
-    'save_tokens_jsonl': True,  # Save token debug files
-    'save_token_with_id_jsonl': True,
+    'save_tokens_jsonl': False,  # Set True to save debug files (large, slow)
+    'save_token_with_id_jsonl': False,  # Set True for roundtrip verification
 }
 
 print("=== Configuration ===")
@@ -168,22 +181,33 @@ from src.data.loader import DevignLoader
 from src.slicing.pdg_slicer import PDGSlicer, PDGSliceConfig, PDGSliceType
 from src.slicing.utils import find_criterion_lines
 from src.tokenization.hybrid_tokenizer import DANGEROUS_APIS, SPECIAL_TOKENS
+from src.tokenization.vectorization_strategy import (
+    VectorizationConfig,
+    get_vectorization_strategy,
+)
 
 if TOKENIZER_TYPE == 'preserve':
     from src.tokenization.preserve_tokenizer import (
         PreserveIdentifierTokenizer,
         build_preserve_vocab,
-        vectorize_batch_preserve,
         FORCE_KEEP_IDENTIFIERS,
         PRESERVED_NUMBERS,
         PRESERVED_HEX,
         PRESERVED_OCTAL,
     )
+elif TOKENIZER_TYPE == 'optimized':
+    from src.tokenization.optimized_tokenizer import (
+        OptimizedHybridTokenizer,
+        build_optimized_vocab,
+        get_all_vocab_tokens,
+        API_FAMILIES,
+        DEFENSE_FAMILIES,
+        SEMANTIC_BUCKETS,
+    )
 else:
     from src.tokenization.hybrid_tokenizer import (
         CanonicalTokenizer,
         build_hybrid_vocab,
-        vectorize,
         get_canonical_vocab_tokens
     )
 
@@ -559,7 +583,31 @@ if TOKENIZER_TYPE == 'preserve':
     
     print("Tokenizing test set...")
     test_tokens, test_details, test_stats = tokenizer.tokenize_batch(test_sliced, with_details=True)
-else:
+
+elif TOKENIZER_TYPE == 'optimized':
+    tokenizer = OptimizedHybridTokenizer(TOKENIZER_CONFIG)
+    
+    print("\nTokenizing with OptimizedHybridTokenizer:")
+    print(f"  - API families: {len(API_FAMILIES)} families")
+    print(f"  - Defense families: {len(DEFENSE_FAMILIES)} families")
+    print(f"  - Semantic buckets: {len(SEMANTIC_BUCKETS)} buckets")
+    
+    print("\nTokenizing train set...")
+    train_tokens = tokenizer.tokenize_batch(train_sliced, show_progress=True)
+    
+    print("Tokenizing val set...")
+    val_tokens = tokenizer.tokenize_batch(val_sliced, show_progress=True)
+    
+    print("Tokenizing test set...")
+    test_tokens = tokenizer.tokenize_batch(test_sliced, show_progress=True)
+    
+    # Placeholder stats for optimized tokenizer
+    train_stats = [{} for _ in range(len(train_tokens))]
+    val_stats = [{} for _ in range(len(val_tokens))]
+    test_stats = [{} for _ in range(len(test_tokens))]
+    train_details = val_details = test_details = None
+
+else:  # canonical
     tokenizer = CanonicalTokenizer(
         preserve_dangerous_apis=TOKENIZER_CONFIG['preserve_dangerous_apis'],
         preserve_keywords=TOKENIZER_CONFIG['preserve_keywords']
@@ -635,7 +683,29 @@ if TOKENIZER_TYPE == 'preserve':
     print(f"\n✓ Critical Tokens Verification:")
     print(f"  Dangerous APIs in vocab: {vocab_debug['dangerous_apis_in_vocab']}/{vocab_debug['dangerous_apis_total']}")
     print(f"  C Keywords in vocab: {vocab_debug['keywords_in_vocab']}/{vocab_debug['keywords_total']}")
-else:
+
+elif TOKENIZER_TYPE == 'optimized':
+    vocab, vocab_debug = build_optimized_vocab(
+        train_tokens,
+        min_freq=TOKENIZER_CONFIG['min_freq'],
+        max_size=TOKENIZER_CONFIG['max_vocab_size'],
+    )
+    
+    print(f"\nOptimized Vocabulary Statistics:")
+    print(f"  Vocab size: {vocab_debug['vocab_size']}")
+    print(f"  Predefined tokens: {vocab_debug['predefined_tokens']}")
+    if 'coverage' in vocab_debug:
+        print(f"  Coverage: {vocab_debug['coverage']:.2%}")
+        print(f"  Added from data: {vocab_debug.get('added_from_data', 0)}")
+    
+    print(f"\nSample vocab entries:")
+    sample_tokens = ['PAD', 'UNK', 'SEP', 'malloc', 'API_ALLOC', 'API_FREE', 
+                     'DEF_CHECK', 'BUF_0', 'LEN_0', 'PTR_0', 'IDX_0']
+    for tok in sample_tokens:
+        if tok in vocab:
+            print(f"  {tok}: {vocab[tok]}")
+
+else:  # canonical
     # Build vocab from train_tokens (already tokenized) for canonical tokenizer
     from collections import Counter
     token_counts = Counter()
@@ -690,127 +760,53 @@ truncation_strategy = TOKENIZER_CONFIG.get('truncation_strategy', 'head_tail')
 head_tokens = TOKENIZER_CONFIG.get('head_tokens', 192)
 tail_tokens = TOKENIZER_CONFIG.get('tail_tokens', 319)
 
-if TOKENIZER_TYPE == 'preserve':
-    print(f"\nTruncation strategy: {truncation_strategy}")
-    if truncation_strategy == 'head_tail':
-        print(f"  Head tokens: {head_tokens}, Tail tokens: {tail_tokens}")
-    
-    print("\nVectorizing train set...")
-    train_input_ids, train_attention_mask, train_unk_pos, train_vec_stats = vectorize_batch_preserve(
-        train_tokens, vocab, max_len,
-        truncation_strategy=truncation_strategy,
-        head_tokens=head_tokens,
-        tail_tokens=tail_tokens
-    )
-    
-    print("Vectorizing val set...")
-    val_input_ids, val_attention_mask, val_unk_pos, val_vec_stats = vectorize_batch_preserve(
-        val_tokens, vocab, max_len,
-        truncation_strategy=truncation_strategy,
-        head_tokens=head_tokens,
-        tail_tokens=tail_tokens
-    )
-    
-    print("Vectorizing test set...")
-    test_input_ids, test_attention_mask, test_unk_pos, test_vec_stats = vectorize_batch_preserve(
-        test_tokens, vocab, max_len,
-        truncation_strategy=truncation_strategy,
-        head_tokens=head_tokens,
-        tail_tokens=tail_tokens
-    )
-    
-    print(f"\nVectorization Statistics:")
-    print(f"  Train: {train_input_ids.shape}, UNK rate: {train_vec_stats['unk_rate']:.2%}")
-    print(f"  Val: {val_input_ids.shape}, UNK rate: {val_vec_stats['unk_rate']:.2%}")
-    print(f"  Test: {test_input_ids.shape}, UNK rate: {test_vec_stats['unk_rate']:.2%}")
-    print(f"  Truncated samples: train={train_vec_stats.get('truncated_samples', 0)}, "
-          f"val={val_vec_stats.get('truncated_samples', 0)}, "
-          f"test={test_vec_stats.get('truncated_samples', 0)}")
-    
+# Create vectorization strategy based on tokenizer type
+vec_config = VectorizationConfig(
+    max_len=max_len,
+    truncation_strategy=truncation_strategy,
+    head_tokens=head_tokens,
+    tail_tokens=tail_tokens,
+    batch_size=PROCESS_CONFIG['batch_size']
+)
+vectorizer = get_vectorization_strategy(TOKENIZER_TYPE, vec_config)
+
+print(f"\nTruncation strategy: {truncation_strategy}")
+if truncation_strategy == 'head_tail':
+    print(f"  Head tokens: {head_tokens}, Tail tokens: {tail_tokens}")
+
+print("\nVectorizing train set...")
+train_result = vectorizer.vectorize_batch(train_tokens, vocab)
+train_input_ids = train_result.input_ids
+train_attention_mask = train_result.attention_mask
+train_unk_pos = train_result.unk_positions
+train_vec_stats = train_result.stats
+
+print("Vectorizing val set...")
+val_result = vectorizer.vectorize_batch(val_tokens, vocab)
+val_input_ids = val_result.input_ids
+val_attention_mask = val_result.attention_mask
+val_unk_pos = val_result.unk_positions
+val_vec_stats = val_result.stats
+
+print("Vectorizing test set...")
+test_result = vectorizer.vectorize_batch(test_tokens, vocab)
+test_input_ids = test_result.input_ids
+test_attention_mask = test_result.attention_mask
+test_unk_pos = test_result.unk_positions
+test_vec_stats = test_result.stats
+
+print(f"\nVectorization Statistics:")
+print(f"  Train: {train_input_ids.shape}, UNK rate: {train_vec_stats['unk_rate']:.2%}")
+print(f"  Val: {val_input_ids.shape}, UNK rate: {val_vec_stats['unk_rate']:.2%}")
+print(f"  Test: {test_input_ids.shape}, UNK rate: {test_vec_stats['unk_rate']:.2%}")
+print(f"  Truncated samples: train={train_vec_stats.get('truncated_samples', 0)}, "
+      f"val={val_vec_stats.get('truncated_samples', 0)}, "
+      f"test={test_vec_stats.get('truncated_samples', 0)}")
+
+if train_vec_stats['top_unk_tokens']:
     print(f"\nTop UNK tokens (train):")
     for tok, count in train_vec_stats['top_unk_tokens'][:15]:
         print(f"  {tok}: {count}")
-else:
-    def vectorize_batch_hybrid(tokens_list, vocab, max_len, batch_size=500):
-        """Vectorize tokens in batches."""
-        n_samples = len(tokens_list)
-        all_input_ids = []
-        all_attention_masks = []
-        
-        for start in tqdm(range(0, n_samples, batch_size), desc="Vectorizing"):
-            end = min(start + batch_size, n_samples)
-            batch_tokens = tokens_list[start:end]
-            
-            for tokens in batch_tokens:
-                input_ids, attention_mask = vectorize(tokens, vocab, max_len)
-                all_input_ids.append(input_ids)
-                all_attention_masks.append(attention_mask)
-        
-        return np.array(all_input_ids, dtype=np.int32), np.array(all_attention_masks, dtype=np.int32)
-    
-    print("\nVectorizing train set...")
-    train_input_ids, train_attention_mask = vectorize_batch_hybrid(train_tokens, vocab, max_len, PROCESS_CONFIG['batch_size'])
-    
-    print("Vectorizing val set...")
-    val_input_ids, val_attention_mask = vectorize_batch_hybrid(val_tokens, vocab, max_len, PROCESS_CONFIG['batch_size'])
-    
-    print("Vectorizing test set...")
-    test_input_ids, test_attention_mask = vectorize_batch_hybrid(test_tokens, vocab, max_len, PROCESS_CONFIG['batch_size'])
-    
-    train_unk_pos = [[] for _ in range(len(train_tokens))]
-    val_unk_pos = [[] for _ in range(len(val_tokens))]
-    test_unk_pos = [[] for _ in range(len(test_tokens))]
-    
-    def compute_unk_stats(input_ids_array, tokens_list, unk_id=1):
-        """Compute UNK statistics from vectorized input_ids.
-        
-        Args:
-            input_ids_array: numpy array of shape (n_samples, max_len)
-            tokens_list: list of token lists (before vectorization)
-            unk_id: vocab ID for UNK token (default: 1)
-        
-        Returns:
-            dict with unk_rate, top_unk_tokens, total_tokens, total_unks
-        """
-        from collections import Counter
-        unk_counter = Counter()
-        total_tokens = 0
-        total_unks = 0
-        
-        for i, tokens in enumerate(tokens_list):
-            ids = input_ids_array[i]
-            # Only count actual tokens (not padding)
-            seq_len = min(len(tokens), len(ids))
-            for j in range(seq_len):
-                total_tokens += 1
-                if ids[j] == unk_id:
-                    total_unks += 1
-                    if j < len(tokens):
-                        unk_counter[tokens[j]] += 1
-        
-        unk_rate = total_unks / total_tokens if total_tokens > 0 else 0
-        top_unk_tokens = unk_counter.most_common(50)
-        
-        return {
-            'unk_rate': unk_rate,
-            'top_unk_tokens': top_unk_tokens,
-            'total_tokens': total_tokens,
-            'total_unks': total_unks
-        }
-    
-    train_vec_stats = compute_unk_stats(train_input_ids, train_tokens)
-    val_vec_stats = compute_unk_stats(val_input_ids, val_tokens)
-    test_vec_stats = compute_unk_stats(test_input_ids, test_tokens)
-    
-    print(f"\nVectorization completed:")
-    print(f"  Train: {train_input_ids.shape}, UNK rate: {train_vec_stats['unk_rate']:.2%}")
-    print(f"  Val: {val_input_ids.shape}, UNK rate: {val_vec_stats['unk_rate']:.2%}")
-    print(f"  Test: {test_input_ids.shape}, UNK rate: {test_vec_stats['unk_rate']:.2%}")
-    
-    if train_vec_stats['top_unk_tokens']:
-        print(f"\nTop UNK tokens (train):")
-        for tok, count in train_vec_stats['top_unk_tokens'][:15]:
-            print(f"  {tok}: {count}")
 
 # %% [markdown]
 # ## 10. Process Vulnerability Features
@@ -989,11 +985,20 @@ if TOKENIZER_TYPE == 'preserve':
     config['test_unk_rate'] = test_vec_stats['unk_rate']
     config['vocab_coverage'] = vocab_debug.get('coverage', 1.0)
 
+elif TOKENIZER_TYPE == 'optimized':
+    config['train_unk_rate'] = train_vec_stats['unk_rate']
+    config['val_unk_rate'] = val_vec_stats['unk_rate']
+    config['test_unk_rate'] = test_vec_stats['unk_rate']
+    config['vocab_coverage'] = vocab_debug.get('coverage', 1.0)
+    config['api_families'] = list(API_FAMILIES.keys())
+    config['defense_families'] = list(DEFENSE_FAMILIES.keys())
+    config['semantic_buckets'] = list(SEMANTIC_BUCKETS.keys())
+
 with open(os.path.join(OUTPUT_DIR, 'config.json'), 'w') as f:
     json.dump(config, f, indent=2)
 print(f"Saved: config.json")
 
-# === 5. Save vocab_debug.json (preserve tokenizer only) ===
+# === 5. Save vocab_debug.json ===
 if TOKENIZER_TYPE == 'preserve':
     vocab_debug['force_keep_identifiers'] = list(FORCE_KEEP_IDENTIFIERS)
     vocab_debug['preserved_numbers'] = list(PRESERVED_NUMBERS)
@@ -1003,8 +1008,14 @@ if TOKENIZER_TYPE == 'preserve':
     with open(os.path.join(OUTPUT_DIR, 'vocab_debug.json'), 'w', encoding='utf-8') as f:
         json.dump(vocab_debug, f, indent=2, ensure_ascii=False)
     print(f"Saved: vocab_debug.json")
-    
-    # === 6. Save vectorization_stats.json ===
+
+elif TOKENIZER_TYPE == 'optimized':
+    with open(os.path.join(OUTPUT_DIR, 'vocab_debug.json'), 'w', encoding='utf-8') as f:
+        json.dump(vocab_debug, f, indent=2, ensure_ascii=False)
+    print(f"Saved: vocab_debug.json")
+
+# === 6. Save vectorization_stats.json ===
+if TOKENIZER_TYPE in ('preserve', 'optimized'):
     vec_stats = {
         'train': {
             'shape': list(train_input_ids.shape),
