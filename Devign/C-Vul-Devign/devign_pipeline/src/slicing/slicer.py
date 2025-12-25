@@ -16,11 +16,9 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import defaultdict
 import re
 
-import sys
-sys.path.insert(0, '/media/hdi/Hdii/Work/C Vul Devign/devign_pipeline')
-from src.ast.parser import ParseResult, CFamilyParser
-from src.graphs.cfg import CFGBuilder, CFG, BasicBlock
-from src.graphs.dfg import DFGBuilder, DFG
+from ..ast.parser import ParseResult, CFamilyParser
+from ..graphs.cfg import CFGBuilder, CFG, BasicBlock
+from ..graphs.dfg import DFGBuilder, DFG
 
 
 class PostDominatorTree:
