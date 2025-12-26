@@ -24,13 +24,70 @@ logger = logging.getLogger(__name__)
 DEFAULT_W2V_CONFIG = {
     'vector_size': 128,
     'window': 5,
-    'min_count': 2,
+    'min_count': 2,  # Filter noise from single-occurrence tokens (they get poor vectors)
     'epochs': 20,
     'sg': 1,  # skip-gram (1) vs CBOW (0)
     'negative': 10,
     'workers': 4,
     'seed': 42,
 }
+
+
+def calculate_weighted_coverage(
+    model: Any,
+    token_sequences: List[List[str]],
+    vocab: Dict[str, int]
+) -> Dict[str, Any]:
+    """
+    Calculate occurrence-weighted Word2Vec coverage.
+    
+    This measures what percentage of actual token occurrences in the corpus
+    have learned Word2Vec vectors, giving a more accurate picture than
+    simple vocabulary coverage.
+    
+    Args:
+        model: Trained gensim Word2Vec model
+        token_sequences: List of token sequences from the corpus
+        vocab: Vocabulary dict (token -> id)
+    
+    Returns:
+        Dict with:
+        - total_occurrences: Total token count
+        - covered_occurrences: Tokens with learned vectors  
+        - weighted_coverage: covered/total as percentage
+        - uncovered_tokens: List of (token, count) for OOV tokens sorted by frequency
+    """
+    from collections import Counter
+    
+    token_counts: Counter = Counter()
+    for seq in token_sequences:
+        token_counts.update(seq)
+    
+    special_tokens = {'PAD', 'UNK', 'BOS', 'EOS', 'SEP'}
+    
+    total_occurrences = 0
+    covered_occurrences = 0
+    uncovered: Dict[str, int] = {}
+    
+    for token, count in token_counts.items():
+        if token in special_tokens:
+            continue
+        total_occurrences += count
+        if token in model.wv:
+            covered_occurrences += count
+        else:
+            uncovered[token] = count
+    
+    weighted_coverage = (covered_occurrences / total_occurrences * 100) if total_occurrences > 0 else 0.0
+    
+    uncovered_sorted = sorted(uncovered.items(), key=lambda x: x[1], reverse=True)
+    
+    return {
+        'total_occurrences': total_occurrences,
+        'covered_occurrences': covered_occurrences,
+        'weighted_coverage': weighted_coverage,
+        'uncovered_tokens': uncovered_sorted
+    }
 
 
 def train_word2vec(
@@ -93,7 +150,8 @@ def create_embedding_matrix(
     model: Any,
     token_to_id: Dict[str, int],
     vocab_size: Optional[int] = None,
-    embed_dim: Optional[int] = None
+    embed_dim: Optional[int] = None,
+    token_sequences: Optional[List[List[str]]] = None
 ) -> Tuple[np.ndarray, Dict]:
     """Create embedding matrix from Word2Vec model.
     
@@ -102,11 +160,13 @@ def create_embedding_matrix(
         token_to_id: Vocabulary dict (token -> id)
         vocab_size: Target vocab size. Defaults to len(token_to_id) or 30000.
         embed_dim: Embedding dimension. Defaults to model.wv.vector_size.
+        token_sequences: Optional token sequences for weighted coverage calculation.
+            If provided, stats will include weighted_coverage metrics.
     
     Returns:
         Tuple of (embedding_matrix, stats_dict) where:
         - embedding_matrix: np.ndarray of shape (vocab_size, embed_dim)
-        - stats_dict: Dict with coverage statistics
+        - stats_dict: Dict with coverage statistics (includes weighted_coverage if token_sequences provided)
         
     Example:
         >>> matrix, stats = create_embedding_matrix(model, vocab)
@@ -157,6 +217,15 @@ def create_embedding_matrix(
         'coverage_percent': coverage,
         'w2v_vocab_size': len(model.wv)
     }
+    
+    if token_sequences is not None:
+        weighted_stats = calculate_weighted_coverage(model, token_sequences, token_to_id)
+        stats['weighted_coverage'] = weighted_stats['weighted_coverage']
+        stats['total_occurrences'] = weighted_stats['total_occurrences']
+        stats['covered_occurrences'] = weighted_stats['covered_occurrences']
+        stats['top_uncovered_tokens'] = weighted_stats['uncovered_tokens'][:20]
+        logger.info(f"  Weighted coverage: {weighted_stats['weighted_coverage']:.1f}% "
+                   f"({weighted_stats['covered_occurrences']}/{weighted_stats['total_occurrences']} occurrences)")
     
     logger.info(f"Embedding matrix stats:")
     logger.info(f"  Found in Word2Vec: {found_count} ({coverage:.1f}%)")
@@ -275,17 +344,30 @@ def save_word2vec_outputs(
     return saved_files
 
 
-def print_similar_words(model: Any, test_words: List[str], topn: int = 5) -> None:
+def print_similar_words(
+    model: Any, 
+    test_words: Optional[List[str]] = None, 
+    topn: int = 5,
+    include_semantic_buckets: bool = True
+) -> None:
     """Print similar words for key tokens (for debugging/analysis).
     
     Args:
         model: Trained gensim Word2Vec model
-        test_words: List of words to find similar words for
+        test_words: List of words to find similar words for. If None, uses defaults.
         topn: Number of similar words to show
+        include_semantic_buckets: Whether to also test semantic bucket tokens (BUF_0, LEN_0, etc.)
     """
+    default_words = ['malloc', 'free', 'memcpy', 'NULL', 'buffer', 'size', 'len', 'ptr']
+    semantic_bucket_words = ['BUF_0', 'LEN_0', 'PTR_0', 'IDX_0', 'ERR_0']
+    
+    words_to_test = test_words if test_words is not None else default_words
+    if include_semantic_buckets:
+        words_to_test = list(words_to_test) + semantic_bucket_words
+    
     logger.info("\nSimilar words for key tokens:")
     
-    for word in test_words:
+    for word in words_to_test:
         if word in model.wv:
             similar = model.wv.most_similar(word, topn=topn)
             similar_str = ', '.join([f"{w}({s:.2f})" for w, s in similar])

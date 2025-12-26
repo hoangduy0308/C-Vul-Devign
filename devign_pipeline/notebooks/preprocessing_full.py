@@ -135,6 +135,12 @@ elif TOKENIZER_TYPE == 'optimized':
         'max_vocab_size': 2000,  # Much smaller vocab (API families + semantic buckets)
         'max_seq_length': 512,
         
+        # Semantic bucket configuration
+        # CRITICAL: Must be True to preserve data flow tracking (VAR_0 → VAR_0 correlations)
+        # Setting to False collapses all variables to single token, destroying discriminative signal
+        'use_indexed_buckets': True,   # BUF_0, BUF_1... preserves identity across slice
+        'max_canonical_ids': 8,        # Max IDs per bucket (BUF_0 to BUF_7, then BUF_OVF)
+        
         # Truncation strategy
         'truncation_strategy': 'head_tail',
         'head_tokens': 192,
@@ -167,6 +173,10 @@ DEBUG_CONFIG = {
     'save_tokens_jsonl': False,  # Set True to save debug files (large, slow)
     'save_token_with_id_jsonl': False,  # Set True for roundtrip verification
 }
+
+# Debug export config - for tokenization debugging
+DEBUG_EXPORT = True  # Set to False to disable
+DEBUG_MAX_SAMPLES = 1000  # Max samples per split to export (None = all)
 
 print("=== Configuration ===")
 print(f"Tokenizer type: {TOKENIZER_TYPE}")
@@ -807,6 +817,92 @@ if train_vec_stats['top_unk_tokens']:
     print(f"\nTop UNK tokens (train):")
     for tok, count in train_vec_stats['top_unk_tokens'][:15]:
         print(f"  {tok}: {count}")
+
+# %% Debug Export - Tokenization Debugging
+if DEBUG_EXPORT:
+    print("\n" + "=" * 60)
+    print("DEBUG EXPORT: Tokenization Debug Files")
+    print("=" * 60)
+    
+    debug_dir = os.path.join(OUTPUT_DIR, 'debug')
+    os.makedirs(debug_dir, exist_ok=True)
+    
+    def export_debug_jsonl(split_name, df, sliced_codes, tokens_list, input_ids_array, vocab, max_samples=None):
+        """Export debug JSONL files for tokenization analysis.
+        
+        Creates two files:
+        - {split}.slices_tokens.jsonl: sliced code + tokens (text)
+        - {split}.slices_token_ids.jsonl: sliced code + token IDs
+        """
+        n_samples = len(df)
+        if max_samples is not None:
+            n_samples = min(n_samples, max_samples)
+        
+        # File 1: slices_tokens.jsonl
+        tokens_path = os.path.join(debug_dir, f'{split_name}.slices_tokens.jsonl')
+        with open(tokens_path, 'w', encoding='utf-8') as f:
+            for i in tqdm(range(n_samples), desc=f"Export {split_name}.slices_tokens"):
+                sample = {
+                    'sample_id': i,
+                    'label': int(df.iloc[i]['target']),
+                    'sliced_code': sliced_codes[i],
+                    'tokens': tokens_list[i],
+                    'n_tokens': len(tokens_list[i])
+                }
+                f.write(json.dumps(sample, ensure_ascii=False) + '\n')
+        
+        # File 2: slices_token_ids.jsonl
+        ids_path = os.path.join(debug_dir, f'{split_name}.slices_token_ids.jsonl')
+        with open(ids_path, 'w', encoding='utf-8') as f:
+            for i in tqdm(range(n_samples), desc=f"Export {split_name}.slices_token_ids"):
+                ids = [int(x) for x in input_ids_array[i].tolist()]
+                # Remove padding (PAD = 0)
+                non_pad_len = sum(1 for x in ids if x != 0)
+                ids_no_pad = ids[:non_pad_len]
+                
+                sample = {
+                    'sample_id': i,
+                    'label': int(df.iloc[i]['target']),
+                    'sliced_code': sliced_codes[i],
+                    'token_ids': ids_no_pad,
+                    'n_tokens': len(ids_no_pad)
+                }
+                f.write(json.dumps(sample, ensure_ascii=False) + '\n')
+        
+        tokens_size = os.path.getsize(tokens_path) / (1024 * 1024)
+        ids_size = os.path.getsize(ids_path) / (1024 * 1024)
+        print(f"  {split_name}: {n_samples} samples, tokens={tokens_size:.1f}MB, ids={ids_size:.1f}MB")
+    
+    # Export for all splits
+    export_debug_jsonl('train', train_df, train_sliced, train_tokens, train_input_ids, vocab, DEBUG_MAX_SAMPLES)
+    export_debug_jsonl('val', val_df, val_sliced, val_tokens, val_input_ids, vocab, DEBUG_MAX_SAMPLES)
+    export_debug_jsonl('test', test_df, test_sliced, test_tokens, test_input_ids, vocab, DEBUG_MAX_SAMPLES)
+    
+    # Save meta.json
+    meta_path = os.path.join(debug_dir, 'meta.json')
+    meta = {
+        'tokenizer_type': TOKENIZER_TYPE,
+        'max_seq_length': max_len,
+        'vocab_size': len(vocab),
+        'truncation_strategy': truncation_strategy,
+        'head_tokens': head_tokens if truncation_strategy == 'head_tail' else None,
+        'tail_tokens': tail_tokens if truncation_strategy == 'head_tail' else None,
+        'debug_max_samples': DEBUG_MAX_SAMPLES,
+        'samples_exported': {
+            'train': min(len(train_df), DEBUG_MAX_SAMPLES) if DEBUG_MAX_SAMPLES else len(train_df),
+            'val': min(len(val_df), DEBUG_MAX_SAMPLES) if DEBUG_MAX_SAMPLES else len(val_df),
+            'test': min(len(test_df), DEBUG_MAX_SAMPLES) if DEBUG_MAX_SAMPLES else len(test_df),
+        },
+        'pdg_slice_config': PDG_SLICE_CONFIG,
+        'tokenizer_config': TOKENIZER_CONFIG,
+    }
+    with open(meta_path, 'w', encoding='utf-8') as f:
+        json.dump(meta, f, indent=2, ensure_ascii=False)
+    
+    print(f"\n✓ Debug files saved to: {debug_dir}")
+    print(f"  - {{split}}.slices_tokens.jsonl (code + tokens)")
+    print(f"  - {{split}}.slices_token_ids.jsonl (code + token IDs)")
+    print(f"  - meta.json (config info)")
 
 # %% [markdown]
 # ## 10. Process Vulnerability Features

@@ -556,12 +556,15 @@ def find_optimal_threshold(
     Args:
         labels: Ground truth labels
         probs: Predicted probabilities
-        metric: 'f1', 'precision', 'recall', or 'balanced' (geometric mean of P and R)
+        metric: 'f1', 'precision', 'recall', 'balanced' (geometric mean of P and R),
+                'mcc' (Matthews Correlation Coefficient), or 'youden' (TPR - FPR)
         min_t, max_t, step: Search range
     
     Returns:
         best_threshold, best_score, results_list
     """
+    from sklearn.metrics import matthews_corrcoef
+    
     thresholds = np.arange(min_t, max_t + step, step)
     results = []
     
@@ -583,6 +586,14 @@ def find_optimal_threshold(
             score = r
         elif metric == 'balanced':
             score = np.sqrt(p * r) if p > 0 and r > 0 else 0.0
+        elif metric == 'mcc':
+            score = matthews_corrcoef(labels, preds)
+        elif metric == 'youden':
+            # Youden's J = Sensitivity + Specificity - 1 = TPR - FPR
+            tn = np.sum((preds == 0) & (labels == 0))
+            fp = np.sum((preds == 1) & (labels == 0))
+            specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+            score = r + specificity - 1  # TPR + TNR - 1
         else:
             score = f1
             

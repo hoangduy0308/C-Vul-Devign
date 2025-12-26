@@ -122,7 +122,7 @@ class BaselineConfig:
     threshold_min: float = 0.2
     threshold_max: float = 0.7
     threshold_step: float = 0.01
-    threshold_optimization_metric: str = 'f1'  # 'f1', 'precision', 'recall', 'balanced'
+    threshold_optimization_metric: str = 'mcc'  # 'f1', 'precision', 'recall', 'balanced', 'mcc', 'youden'
     
     # ============= VULN FEATURES (optional) =============
     use_vuln_features: bool = False
@@ -235,26 +235,21 @@ def get_focal_config() -> BaselineConfig:
     """
     Focal Loss focused config.
     
-    Uses Focal Loss with alpha=0.25 to down-weight positives (for when 
-    model over-predicts positive class) and gamma=2.0 for hard example focus.
+    DEPRECATED: Use BCE with class weights instead for nearly-balanced data.
+    Focal loss with wrong alpha can cause model to collapse to constant predictions.
     
-    Recommended when:
-    - Model has high recall but low precision
-    - Want to reduce false positives
-    - Training data has many easy examples dominating the loss
+    Only use when:
+    - Dataset is severely imbalanced (>5:1 ratio)
+    - Model has confirmed high recall but very low precision
     """
     return BaselineConfig().override(
-        # Focal Loss settings
-        loss_type="focal_alpha",
-        focal_gamma=2.0,
-        focal_alpha=0.25,  # Down-weight positives (model over-predicts)
+        # Use BCE for balanced data first, focal only for severe imbalance
+        loss_type="bce_weighted",
+        pos_weight_override=1.0,  # Data is balanced (45.8% / 54.2%)
         
-        # Don't use pos_weight with focal (already has alpha weighting)
-        pos_weight_override=None,
-        
-        # Threshold optimization
-        threshold_optimization_metric='f1',
-        threshold_min=0.20,
+        # Threshold optimization with MCC to prevent all-positive collapse
+        threshold_optimization_metric='mcc',
+        threshold_min=0.30,
         threshold_max=0.70,
     )
 

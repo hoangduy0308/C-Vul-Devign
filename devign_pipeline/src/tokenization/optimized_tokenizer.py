@@ -252,7 +252,26 @@ SINGLE_LETTER_MAP = {
     'm': 'VAR',
 }
 
-MAX_CANONICAL_IDS = 32  # Default value, can be overridden via config
+MAX_CANONICAL_IDS = 12  # 12 is a safer middle ground: 8 was too small for complex PDG slices with many buffers; functions with >12 unique buffers will use BUF_OVF
+
+# Truly dangerous APIs - most critical security-relevant functions
+# (distinct from UNIVERSAL_DANGEROUS which is auto-generated from preserve_exact)
+TRULY_DANGEROUS_APIS = {
+    'gets', 'strcpy', 'strcat', 'sprintf', 'vsprintf',
+    'scanf', 'sscanf', 'fscanf',
+    'system', 'popen', 'execve', 'execl', 'execv',
+    'mktemp', 'tmpnam', 'tempnam',
+    'memcpy', 'memmove', 'wcscpy', 'wcscat',
+    'realpath', 'getwd', 'getcwd',
+}
+
+# Safe versions of dangerous APIs - preserve exact to distinguish from dangerous
+SAFE_APIS = {
+    'snprintf', 'vsnprintf',
+    'strncpy', 'strlcpy', 'strncat', 'strlcat',
+    'fgets', 'getline',
+    'memcpy_s', 'strcpy_s', 'strncpy_s', 'strcat_s',
+}
 
 
 # =============================================================================
@@ -308,6 +327,7 @@ class OptimizedHybridTokenizer:
         self.config = config or {}
         self.regex = TOKEN_REGEX
         self.max_canonical_ids = self.config.get('max_canonical_ids', MAX_CANONICAL_IDS)
+        self.use_indexed_buckets = self.config.get('use_indexed_buckets', True)
         self._saturation_warned: set = set()
         self._reset_var_mappings()
     
@@ -323,11 +343,17 @@ class OptimizedHybridTokenizer:
         Get API family token for a function.
         
         Returns:
-            - Exact token if in UNIVERSAL_DANGEROUS
+            - Exact token if in UNIVERSAL_DANGEROUS, TRULY_DANGEROUS_APIS, or SAFE_APIS
             - API family token if in families
             - None otherwise
         """
         if func_name in UNIVERSAL_DANGEROUS:
+            return func_name
+        
+        if func_name in TRULY_DANGEROUS_APIS:
+            return func_name
+        
+        if func_name in SAFE_APIS:
             return func_name
         
         if func_name in _API_LOOKUP:
@@ -409,11 +435,19 @@ class OptimizedHybridTokenizer:
         Get or create canonical token for an identifier.
         
         Returns tokens like BUF_0, LEN_1, PTR_0, VAR_5, etc.
+        Or if use_indexed_buckets=False, returns just BUF, LEN, PTR, etc.
         """
         if identifier in self.var_to_canonical:
             return self.var_to_canonical[identifier]
         
         bucket = self._get_semantic_bucket(identifier)
+        
+        # UNINDEXED mode: return bucket name directly without index
+        if not self.use_indexed_buckets:
+            self.var_to_canonical[identifier] = bucket
+            return bucket
+        
+        # INDEXED mode: return bucket with index (BUF_0, BUF_1, etc.)
         idx = self.bucket_counters[bucket]
         
         if idx >= self.max_canonical_ids:
@@ -632,12 +666,17 @@ class OptimizedHybridTokenizer:
 # VOCABULARY BUILDING
 # =============================================================================
 
-def get_all_vocab_tokens(max_canonical_ids: int = MAX_CANONICAL_IDS) -> List[str]:
+def get_all_vocab_tokens(
+    max_canonical_ids: int = MAX_CANONICAL_IDS,
+    use_indexed_buckets: bool = True
+) -> List[str]:
     """
     Get all predefined vocabulary tokens.
     
     Args:
-        max_canonical_ids: Maximum number of IDs per semantic bucket (default: 32)
+        max_canonical_ids: Maximum number of IDs per semantic bucket (default: 8)
+        use_indexed_buckets: If True, generate BUF_0, BUF_1, etc. 
+                            If False, generate just BUF, LEN, etc.
     
     Returns list of all tokens that should be in vocab.
     """
@@ -652,19 +691,27 @@ def get_all_vocab_tokens(max_canonical_ids: int = MAX_CANONICAL_IDS) -> List[str
     # Universal dangerous APIs
     tokens.extend(UNIVERSAL_DANGEROUS)
     
+    # Truly dangerous APIs (may overlap with universal, but ensures they're included)
+    tokens.extend(TRULY_DANGEROUS_APIS)
+    
     # Defense tokens
     tokens.extend(DEFENSE_FAMILIES.keys())
     for token, _ in DEFENSE_PATTERNS:
         if token not in tokens:
             tokens.append(token)
     
-    # Semantic bucket tokens (BUF_0 to BUF_{max_canonical_ids-1}, etc.)
+    # Semantic bucket tokens
     all_buckets = list(SEMANTIC_BUCKETS.keys()) + ['VAR']
-    for bucket in all_buckets:
-        for i in range(max_canonical_ids):
-            tokens.append(f"{bucket}_{i}")
-        # Add overflow token for each bucket
-        tokens.append(f"{bucket}_OVF")
+    if use_indexed_buckets:
+        # Indexed mode: BUF_0 to BUF_{max_canonical_ids-1}, etc.
+        for bucket in all_buckets:
+            for i in range(max_canonical_ids):
+                tokens.append(f"{bucket}_{i}")
+            # Add overflow token for each bucket
+            tokens.append(f"{bucket}_OVF")
+    else:
+        # Unindexed mode: just BUF, LEN, PTR, etc.
+        tokens.extend(all_buckets)
     
     # C keywords
     tokens.extend(C_KEYWORDS)
@@ -689,6 +736,7 @@ def build_optimized_vocab(
     tokens_list: List[List[str]] = None,
     min_freq: int = 2,
     max_size: int = 2000,
+    config: Dict = None,
 ) -> Tuple[Dict[str, int], Dict]:
     """
     Build compact vocabulary for optimized tokenizer.
@@ -702,16 +750,24 @@ def build_optimized_vocab(
         tokens_list: Optional list of tokenized samples (for frequency filtering)
         min_freq: Minimum frequency for additional tokens
         max_size: Maximum vocabulary size
+        config: Optional config dict with 'max_canonical_ids' and 'use_indexed_buckets'
     
     Returns:
         vocab: {token: id}
         debug_info: Statistics
     """
+    config = config or {}
+    max_canonical_ids = config.get('max_canonical_ids', MAX_CANONICAL_IDS)
+    use_indexed_buckets = config.get('use_indexed_buckets', True)
+    
     # Start with special tokens
     vocab = {tok: idx for tok, idx in SPECIAL_TOKENS.items()}
     
     # Add all predefined tokens
-    predefined = get_all_vocab_tokens()
+    predefined = get_all_vocab_tokens(
+        max_canonical_ids=max_canonical_ids,
+        use_indexed_buckets=use_indexed_buckets
+    )
     for tok in predefined:
         if tok not in vocab:
             vocab[tok] = len(vocab)
