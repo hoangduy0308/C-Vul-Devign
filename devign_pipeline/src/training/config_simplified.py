@@ -125,7 +125,7 @@ class BaselineConfig:
     threshold_optimization_metric: str = 'mcc'  # 'f1', 'precision', 'recall', 'balanced', 'mcc', 'youden'
     
     # ============= VULN FEATURES (optional) =============
-    use_vuln_features: bool = False
+    use_vuln_features: bool = True  # Enabled: handcrafted features help when tokens lack discriminative power
     vuln_feature_dim: int = 25
     vuln_feature_hidden_dim: int = 64
     vuln_feature_dropout: float = 0.2

@@ -252,7 +252,7 @@ SINGLE_LETTER_MAP = {
     'm': 'VAR',
 }
 
-MAX_CANONICAL_IDS = 12  # 12 is a safer middle ground: 8 was too small for complex PDG slices with many buffers; functions with >12 unique buffers will use BUF_OVF
+MAX_CANONICAL_IDS = 40  # Increased from 12 to reduce *_OVF overflow. Analysis showed VAR_OVF was 6650 tokens (most common after punctuation), destroying data flow tracking
 
 # Truly dangerous APIs - most critical security-relevant functions
 # (distinct from UNIVERSAL_DANGEROUS which is auto-generated from preserve_exact)

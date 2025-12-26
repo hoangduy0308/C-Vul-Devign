@@ -121,7 +121,11 @@ class DevignDataset(Dataset):
             vuln_path = path_obj.with_name(f"{path_obj.stem}_vuln.npz")
             if vuln_path.exists():
                 vuln_data = np.load(vuln_path)
-                self.vuln_features = vuln_data.get('features') or vuln_data.get('vuln_features')
+                # Check both possible key names
+                if 'features' in vuln_data:
+                    self.vuln_features = vuln_data['features']
+                elif 'vuln_features' in vuln_data:
+                    self.vuln_features = vuln_data['vuln_features']
                 if self.vuln_features is not None and len(self.vuln_features) != len(self.labels):
                     self.vuln_features = None
     
@@ -715,6 +719,38 @@ def update_bn_for_swa(loader: DataLoader, model: nn.Module, device: torch.device
 # ## 5. Training Loop
 
 # %%
+def _prepare_batch(batch: Dict, device: torch.device) -> Tuple[torch.Tensor, ...]:
+    """Prepare batch tensors for forward pass.
+    
+    Returns:
+        Tuple of (input_ids, attention_mask, labels, vuln_features, lengths)
+    """
+    input_ids = batch['input_ids'].to(device, non_blocking=True)
+    attention_mask = batch['attention_mask'].to(device, non_blocking=True)
+    labels = batch['labels'].to(device, non_blocking=True)
+    vuln_features = batch.get('vuln_features')
+    lengths = batch['lengths'].to(device, non_blocking=True)
+    
+    if vuln_features is not None:
+        vuln_features = vuln_features.to(device, non_blocking=True)
+    
+    return input_ids, attention_mask, labels, vuln_features, lengths
+
+
+def _forward_pass(
+    model: nn.Module,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    vuln_features: Optional[torch.Tensor],
+    lengths: torch.Tensor,
+    config: BaselineConfig
+) -> torch.Tensor:
+    """Run forward pass with AMP."""
+    with autocast(device_type='cuda', enabled=config.use_amp):
+        logits = model(input_ids, attention_mask, vuln_features, lengths)
+    return logits
+
+
 def train_epoch(
     model: nn.Module,
     loader: DataLoader,
@@ -722,24 +758,25 @@ def train_epoch(
     criterion: nn.Module,
     scaler: GradScaler,
     config: BaselineConfig,
-    device: torch.device
+    device: torch.device,
+    compute_accurate_metrics: bool = True
 ) -> Dict[str, float]:
-    """Single training epoch."""
+    """Single training epoch.
+    
+    Args:
+        compute_accurate_metrics: If True, compute metrics in eval mode at end of epoch.
+            This adds ~10-15% time but gives accurate train F1/AUC comparable to val metrics.
+            If False, uses approximate metrics collected during training (with dropout ON).
+    """
     model.train()
     total_loss = 0.0
-    all_probs, all_labels = [], []
+    # Always collect approximate metrics during training (for fallback)
+    approx_probs, approx_labels = [], []
     
     optimizer.zero_grad()
     
     for i, batch in enumerate(tqdm(loader, desc="Training", leave=False)):
-        input_ids = batch['input_ids'].to(device, non_blocking=True)
-        attention_mask = batch['attention_mask'].to(device, non_blocking=True)
-        labels = batch['labels'].to(device, non_blocking=True)
-        vuln_features = batch.get('vuln_features')
-        lengths = batch['lengths'].to(device, non_blocking=True)
-        
-        if vuln_features is not None:
-            vuln_features = vuln_features.to(device, non_blocking=True)
+        input_ids, attention_mask, labels, vuln_features, lengths = _prepare_batch(batch, device)
         
         with autocast(device_type='cuda', enabled=config.use_amp):
             logits = model(input_ids, attention_mask, vuln_features, lengths)
@@ -757,13 +794,36 @@ def train_epoch(
         
         total_loss += loss.item() * config.accumulation_steps
         
+        # Collect approximate metrics (with dropout ON)
         probs = get_probs_from_logits(logits.detach()).cpu().numpy()
-        all_probs.extend(probs)
-        all_labels.extend(labels.cpu().numpy())
+        approx_probs.extend(probs)
+        approx_labels.extend(labels.cpu().numpy())
     
     avg_loss = total_loss / len(loader)
-    all_probs = np.array(all_probs)
-    all_labels = np.array(all_labels)
+    
+    # Compute accurate metrics in eval mode (no dropout)
+    if compute_accurate_metrics:
+        model.eval()
+        all_probs, all_labels = [], []
+        with torch.no_grad():
+            for batch in loader:
+                input_ids, attention_mask, labels_batch, vuln_features, lengths = _prepare_batch(batch, device)
+                logits = _forward_pass(model, input_ids, attention_mask, vuln_features, lengths, config)
+                
+                probs = get_probs_from_logits(logits).cpu().numpy()
+                all_probs.extend(probs)
+                all_labels.extend(labels_batch.cpu().numpy())
+        
+        model.train()  # Restore train mode
+        
+        all_probs = np.array(all_probs)
+        all_labels = np.array(all_labels)
+    else:
+        # Use approximate metrics collected during training (with dropout ON)
+        # These will be slightly lower than eval metrics but still valid for tracking
+        all_probs = np.array(approx_probs)
+        all_labels = np.array(approx_labels)
+    
     all_preds = (all_probs >= 0.5).astype(int)
     
     try:
@@ -1164,8 +1224,10 @@ def train_single_seed(
     for epoch in range(1, config.max_epochs + 1):
         epoch_start = time.time()
         
-        # Train
-        train_metrics = train_epoch(model, train_loader, optimizer, criterion, scaler, config, DEVICE)
+        # Train - only compute accurate metrics every 5 epochs to save time
+        compute_accurate = (epoch % 5 == 0) or (epoch == config.max_epochs)
+        train_metrics = train_epoch(model, train_loader, optimizer, criterion, scaler, config, DEVICE, 
+                                    compute_accurate_metrics=compute_accurate)
         
         # Validate
         val_metrics = evaluate(model, val_loader, criterion, config, DEVICE)
