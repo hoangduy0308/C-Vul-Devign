@@ -9,3 +9,5 @@ Dataset/
 *.pth
 *.zip
 temp_repo/
+vscode-devign-extension/
+build/

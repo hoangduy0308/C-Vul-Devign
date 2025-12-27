@@ -42,58 +42,115 @@ jobs:
             echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
       
-      - name: Create release directory
+      - name: Create release directory structure
         run: |
-          mkdir -p build/release/devign_infer
-          mkdir -p build/release/models
+          mkdir -p build/scanner/devign_infer
+          mkdir -p build/scanner/src/tokenization
+          mkdir -p build/scanner/src/ast
+          mkdir -p build/scanner/src/slicing
+          mkdir -p build/scanner/src/vuln
+          mkdir -p build/scanner/src/utils
+          mkdir -p build/scanner/src/training
+          mkdir -p build/scanner/models
       
-      - name: Copy scanner files
+      - name: Copy scanner files (matching build_scanner.py)
         run: |
-          cp -r devign_pipeline/devign_infer/* build/release/devign_infer/
-          cp devign_pipeline/devign_scan.py build/release/
-          cp requirements-inference.txt build/release/requirements.txt
+          # Main scanner script
+          cp devign_pipeline/devign_scan.py build/scanner/devign_scan.py
+          
+          # Inference module
+          cp -r devign_pipeline/devign_infer/* build/scanner/devign_infer/
+          
+          # Source modules
+          cp devign_pipeline/src/__init__.py build/scanner/src/__init__.py
+          cp -r devign_pipeline/src/tokenization/* build/scanner/src/tokenization/
+          cp -r devign_pipeline/src/ast/* build/scanner/src/ast/
+          cp -r devign_pipeline/src/slicing/* build/scanner/src/slicing/
+          cp -r devign_pipeline/src/vuln/* build/scanner/src/vuln/
+          cp -r devign_pipeline/src/utils/* build/scanner/src/utils/
+          cp -r devign_pipeline/src/training/* build/scanner/src/training/
       
       - name: Copy model files
         run: |
-          # Copy model if exists
-          if [ -f "output/models/best_model.pt" ]; then
-            cp output/models/best_model.pt build/release/models/
-          elif [ -f "models/best_model.pt" ]; then
-            cp models/best_model.pt build/release/models/
-          fi
+          # Copy ensemble models
+          cp models/best_v2_seed42.pt build/scanner/models/ || echo "Warning: best_v2_seed42.pt not found"
+          cp models/best_v2_seed1042.pt build/scanner/models/ || echo "Warning: best_v2_seed1042.pt not found"
+          cp models/best_v2_seed2042.pt build/scanner/models/ || echo "Warning: best_v2_seed2042.pt not found"
           
-          # Copy vocab if exists
-          for path in output/vocab.json models/vocab.json devign_pipeline/vocab.json; do
-            if [ -f "$path" ]; then
-              cp "$path" build/release/models/vocab.json
-              break
-            fi
-          done
-          
-          # Copy config if exists
-          if [ -f "output/config.json" ]; then
-            cp output/config.json build/release/models/
-          fi
+          # Copy vocab and config
+          cp models/vocab.json build/scanner/models/ || echo "Warning: vocab.json not found"
+          cp models/config.json build/scanner/models/ || echo "Warning: config.json not found"
+          cp models/feature_stats.json build/scanner/models/ || echo "Warning: feature_stats.json not found"
       
-      - name: Create packages
+      - name: Create requirements.txt
         run: |
-          cd build
-          
-          # Code only package
-          zip -r devign-scanner-code.zip \
-            release/devign_infer \
-            release/devign_scan.py \
-            release/requirements.txt
-          
-          # Full package
-          zip -r devign-scanner-full.zip release/
-          
-          # Models only package
-          if [ -f "release/models/best_model.pt" ]; then
-            zip -r devign-models.zip release/models/
-          fi
-          
-          ls -lh *.zip
+          cat > build/scanner/requirements.txt << 'EOF'
+          # Devign Scanner Dependencies
+          # Install with: pip install -r requirements.txt
+
+          torch>=2.0.0
+          numpy>=1.20.0
+          tqdm>=4.60.0
+          EOF
+      
+      - name: Create README.md
+        run: |
+          cat > build/scanner/README.md << 'EOF'
+          # Devign Vulnerability Scanner
+
+          AI-powered C/C++ vulnerability detection using BiGRU deep learning.
+
+          ## Quick Start
+
+          ```bash
+          # Install dependencies
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy tqdm
+
+          # Scan a file
+          python devign_scan.py scan file.c
+
+          # Scan a directory
+          python devign_scan.py scan src/ --recursive
+
+          # Output SARIF for GitHub Code Scanning
+          python devign_scan.py scan src/ --output results.sarif --format sarif
+          ```
+
+          ## Usage in GitHub Actions
+
+          ```yaml
+          - uses: hoangduy0308/C-Vul-Devign@main
+            with:
+              threshold: 0.5
+              scan-mode: diff
+          ```
+
+          ## Options
+
+          - `--threshold`: Vulnerability probability threshold (default: 0.5)
+          - `--format`: Output format - text, json, sarif (default: text)
+          - `--output`: Save results to file
+          - `--recursive`: Scan directories recursively
+          - `--fail-on-findings`: Exit with code 1 if vulnerabilities found
+
+          ## License
+
+          MIT License
+          EOF
+      
+      - name: Remove __pycache__ and .pyc files
+        run: |
+          find build/scanner -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+          find build/scanner -type f -name "*.pyc" -delete 2>/dev/null || true
+          find build/scanner -type f -name "*.pyo" -delete 2>/dev/null || true
+      
+      - name: Create devign-scanner.zip
+        run: |
+          cd build/scanner
+          zip -r ../devign-scanner.zip .
+          cd ..
+          ls -lh devign-scanner.zip
       
       - name: Generate release notes
         run: |
@@ -107,9 +164,7 @@ jobs:
           
           | Package | Description |
           |---------|-------------|
-          | devign-scanner-code.zip | Scanner code only (lightweight, ~50KB) |
-          | devign-scanner-full.zip | Complete package with trained models |
-          | devign-models.zip | Model files only (for updates) |
+          | devign-scanner.zip | Complete scanner with trained models |
           
           ### 🚀 Quick Start
           
@@ -136,14 +191,14 @@ jobs:
           
           \`\`\`bash
           # Download
-          curl -L https://github.com/hoangduy0308/C-Vul-Devign/releases/download/$VERSION/devign-scanner-full.zip -o scanner.zip
+          curl -L https://github.com/hoangduy0308/C-Vul-Devign/releases/download/$VERSION/devign-scanner.zip -o scanner.zip
           unzip scanner.zip
           
           # Install dependencies
           pip install torch numpy tqdm --index-url https://download.pytorch.org/whl/cpu
           
           # Scan
-          python release/devign_scan.py scan /path/to/your/code
+          python devign_scan.py scan /path/to/your/code
           \`\`\`
           
           ### 📖 Documentation
@@ -159,9 +214,7 @@ jobs:
           name: Devign Scanner ${{ steps.version.outputs.version }}
           body_path: build/RELEASE_NOTES.md
           files: |
-            build/devign-scanner-code.zip
-            build/devign-scanner-full.zip
-            build/devign-models.zip
+            build/devign-scanner.zip
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -172,7 +225,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Packages:**" >> $GITHUB_STEP_SUMMARY
-          ls -lh build/*.zip | awk '{print "- " $NF ": " $5}' >> $GITHUB_STEP_SUMMARY
+          echo "**Package:**" >> $GITHUB_STEP_SUMMARY
+          ls -lh build/devign-scanner.zip | awk '{print "- " $NF ": " $5}' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "[View Release](https://github.com/${{ github.repository }}/releases/tag/${{ steps.version.outputs.version }})" >> $GITHUB_STEP_SUMMARY

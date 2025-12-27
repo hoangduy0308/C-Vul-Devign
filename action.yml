@@ -81,7 +81,7 @@ runs:
       shell: bash
       run: |
         # Download scanner from releases
-        curl -sL https://github.com/hoangduy0308/C-Vul-Devign/releases/latest/download/devign-scanner.zip -o scanner.zip
+        curl -sL https://github.com/hoangduy0308/C-Vul-Devign/releases/download/v1.0.0/devign-scanner.zip -o scanner.zip
         unzip -q scanner.zip -d ${{ runner.temp }}/devign
     
     - name: Run scan
