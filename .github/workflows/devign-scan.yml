@@ -53,8 +53,9 @@ concurrency:
 
 env:
   PYTHON_VERSION: '3.10'
-  MODEL_PATH: 'models/best_model.pt'
+  MODEL_DIR: 'models'
   VOCAB_PATH: 'models/vocab.json'
+  CONFIG_PATH: 'models/config.json'
 
 jobs:
   vulnerability-scan:
@@ -132,11 +133,13 @@ jobs:
           cd devign_pipeline
           python devign_scan.py scan-diff \
             --base ${{ steps.scan-mode.outputs.base }} \
-            --model ../${{ env.MODEL_PATH }} \
+            --model-dir ../${{ env.MODEL_DIR }} \
             --vocab ../${{ env.VOCAB_PATH }} \
+            --config ../${{ env.CONFIG_PATH }} \
             --threshold ${{ inputs.threshold || '0.5' }} \
             --format sarif \
             --output ../results.sarif \
+            --ensemble \
             --quiet
         continue-on-error: true
       
@@ -145,11 +148,13 @@ jobs:
         run: |
           cd devign_pipeline
           python devign_scan.py scan . \
-            --model ../${{ env.MODEL_PATH }} \
+            --model-dir ../${{ env.MODEL_DIR }} \
             --vocab ../${{ env.VOCAB_PATH }} \
+            --config ../${{ env.CONFIG_PATH }} \
             --threshold ${{ inputs.threshold || '0.5' }} \
             --format sarif \
             --output ../results.sarif \
+            --ensemble \
             --recursive \
             --quiet
         continue-on-error: true
