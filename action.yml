@@ -45,6 +45,10 @@ inputs:
     description: 'Upload SARIF to GitHub Code Scanning'
     required: false
     default: 'true'
+  scanner-version:
+    description: 'Scanner version to download (e.g., v1.0.0 or latest)'
+    required: false
+    default: 'latest'
 
 outputs:
   findings-count:
@@ -80,26 +84,49 @@ runs:
     - name: Download scanner
       shell: bash
       run: |
-        # Download scanner from releases
-        curl -sL https://github.com/hoangduy0308/C-Vul-Devign/releases/download/v1.0.0/devign-scanner.zip -o scanner.zip
-        unzip -q scanner.zip -d ${{ runner.temp }}/devign
+        SCANNER_DIR="${{ runner.temp }}/devign-scanner"
+        mkdir -p "$SCANNER_DIR"
+        
+        # Determine download URL
+        if [ "${{ inputs.scanner-version }}" == "latest" ]; then
+          DOWNLOAD_URL="https://github.com/hoangduy0308/C-Vul-Devign/releases/latest/download/devign-scanner.zip"
+        else
+          DOWNLOAD_URL="https://github.com/hoangduy0308/C-Vul-Devign/releases/download/${{ inputs.scanner-version }}/devign-scanner.zip"
+        fi
+        
+        echo "Downloading scanner from: $DOWNLOAD_URL"
+        curl -sL "$DOWNLOAD_URL" -o "$SCANNER_DIR/scanner.zip"
+        
+        # Extract scanner
+        unzip -q "$SCANNER_DIR/scanner.zip" -d "$SCANNER_DIR"
+        rm "$SCANNER_DIR/scanner.zip"
+        
+        echo "Scanner installed to: $SCANNER_DIR"
+        ls -la "$SCANNER_DIR"
     
     - name: Run scan
       id: scan
       shell: bash
       run: |
-        cd ${{ runner.temp }}/devign
+        SCANNER_DIR="${{ runner.temp }}/devign-scanner"
         
+        # Run scan based on mode
         if [ "${{ inputs.scan-mode }}" == "diff" ]; then
-          python devign_scan.py scan-diff \
-            --base "${{ inputs.diff-base }}" \
+          echo "Running diff scan against ${{ inputs.diff-base }}"
+          cd "${{ github.workspace }}"
+          python "$SCANNER_DIR/devign_scan.py" \
             --threshold ${{ inputs.threshold }} \
+            scan-diff \
+            --base "${{ inputs.diff-base }}" \
             --format sarif \
             --output "${{ github.workspace }}/${{ inputs.sarif-output }}" \
             --quiet || true
         else
-          python devign_scan.py scan "${{ github.workspace }}/${{ inputs.path }}" \
+          echo "Running full scan on ${{ inputs.path }}"
+          cd "${{ github.workspace }}"
+          python "$SCANNER_DIR/devign_scan.py" \
             --threshold ${{ inputs.threshold }} \
+            scan "${{ github.workspace }}/${{ inputs.path }}" \
             --format sarif \
             --output "${{ github.workspace }}/${{ inputs.sarif-output }}" \
             --recursive \
@@ -107,16 +134,20 @@ runs:
         fi
         
         # Extract counts from SARIF
-        if [ -f "${{ github.workspace }}/${{ inputs.sarif-output }}" ]; then
-          FINDINGS=$(python3 -c "import json; d=json.load(open('${{ github.workspace }}/${{ inputs.sarif-output }}')); print(len(d['runs'][0]['results']))")
-          HIGH_RISK=$(python3 -c "import json; d=json.load(open('${{ github.workspace }}/${{ inputs.sarif-output }}')); print(sum(1 for r in d['runs'][0]['results'] if r.get('level')=='error'))")
+        SARIF_FILE="${{ github.workspace }}/${{ inputs.sarif-output }}"
+        if [ -f "$SARIF_FILE" ]; then
+          FINDINGS=$(python3 -c "import json; d=json.load(open('$SARIF_FILE')); print(len(d['runs'][0]['results']))")
+          HIGH_RISK=$(python3 -c "import json; d=json.load(open('$SARIF_FILE')); print(sum(1 for r in d['runs'][0]['results'] if r.get('level')=='error'))")
         else
           FINDINGS=0
           HIGH_RISK=0
+          # Create empty SARIF file
+          echo '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"Devign","version":"1.0.0"}},"results":[]}]}' > "$SARIF_FILE"
         fi
         
         echo "findings=$FINDINGS" >> $GITHUB_OUTPUT
         echo "high_risk=$HIGH_RISK" >> $GITHUB_OUTPUT
+        echo "Found $FINDINGS vulnerabilities ($HIGH_RISK high-risk)"
     
     - name: Upload SARIF
       if: inputs.upload-sarif == 'true'

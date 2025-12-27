@@ -53,9 +53,6 @@ concurrency:
 
 env:
   PYTHON_VERSION: '3.10'
-  MODEL_DIR: 'models'
-  VOCAB_PATH: 'models/vocab.json'
-  CONFIG_PATH: 'models/config.json'
 
 jobs:
   vulnerability-scan:
@@ -85,28 +82,20 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install numpy tqdm
       
-      - name: Download model artifacts
-        uses: actions/cache@v4
-        id: model-cache
-        with:
-          path: |
-            models/
-          key: devign-model-v1
-      
-      # If model not in cache, download from releases or external storage
-      - name: Download model (if not cached)
-        if: steps.model-cache.outputs.cache-hit != 'true'
+      - name: Download scanner from releases
         run: |
-          mkdir -p models
-          # Option 1: Download from GitHub Releases
-          # gh release download v1.0 -p "*.pt" -p "*.json" -D models/
+          # Get latest release or specific version
+          RELEASE_URL="https://github.com/hoangduy0308/C-Vul-Devign/releases/latest/download/devign-scanner.zip"
           
-          # Option 2: Download from external URL
-          # curl -L -o models/best_model.pt "$MODEL_URL"
-          # curl -L -o models/vocab.json "$VOCAB_URL"
+          echo "Downloading scanner from: $RELEASE_URL"
+          curl -sL "$RELEASE_URL" -o scanner.zip
           
-          echo "⚠️ Model files not found. Please configure model download."
-          echo "See README for instructions on setting up model artifacts."
+          # Extract to scanner directory
+          mkdir -p scanner
+          unzip -q scanner.zip -d scanner
+          
+          echo "Scanner contents:"
+          ls -la scanner/
       
       - name: Determine scan mode
         id: scan-mode
@@ -130,31 +119,25 @@ jobs:
       - name: Run vulnerability scan (diff mode)
         if: steps.scan-mode.outputs.mode == 'diff'
         run: |
-          cd devign_pipeline
-          python devign_scan.py scan-diff \
-            --base ${{ steps.scan-mode.outputs.base }} \
-            --model-dir ../${{ env.MODEL_DIR }} \
-            --vocab ../${{ env.VOCAB_PATH }} \
-            --config ../${{ env.CONFIG_PATH }} \
+          cd "${{ github.workspace }}"
+          python scanner/devign_scan.py \
             --threshold ${{ inputs.threshold || '0.5' }} \
+            scan-diff \
+            --base ${{ steps.scan-mode.outputs.base }} \
             --format sarif \
-            --output ../results.sarif \
-            --ensemble \
+            --output results.sarif \
             --quiet
         continue-on-error: true
       
       - name: Run vulnerability scan (full mode)
         if: steps.scan-mode.outputs.mode == 'full'
         run: |
-          cd devign_pipeline
-          python devign_scan.py scan . \
-            --model-dir ../${{ env.MODEL_DIR }} \
-            --vocab ../${{ env.VOCAB_PATH }} \
-            --config ../${{ env.CONFIG_PATH }} \
+          cd "${{ github.workspace }}"
+          python scanner/devign_scan.py \
             --threshold ${{ inputs.threshold || '0.5' }} \
+            scan . \
             --format sarif \
-            --output ../results.sarif \
-            --ensemble \
+            --output results.sarif \
             --recursive \
             --quiet
         continue-on-error: true
@@ -169,13 +152,11 @@ jobs:
       - name: Generate scan summary
         if: always()
         run: |
-          cd devign_pipeline
-          
           echo "## 🔍 Devign Vulnerability Scan Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          if [ -f ../results.sarif ]; then
-            FINDINGS=$(python -c "import json; d=json.load(open('../results.sarif')); print(len(d['runs'][0]['results']))")
+          if [ -f results.sarif ]; then
+            FINDINGS=$(python -c "import json; d=json.load(open('results.sarif')); print(len(d['runs'][0]['results']))")
             echo "**Findings:** $FINDINGS potential vulnerabilities" >> $GITHUB_STEP_SUMMARY
             
             if [ "$FINDINGS" -gt 0 ]; then
