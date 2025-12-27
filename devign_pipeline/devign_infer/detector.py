@@ -609,6 +609,92 @@ class VulnerabilityDetector:
         result.details["file_path"] = file_path
         return result
     
+    def analyze_file_by_functions(self, file_path: str) -> Dict[str, Any]:
+        """
+        Analyze a C source file by splitting into individual functions.
+        
+        This provides more accurate results since the model was trained
+        on individual functions.
+        
+        Returns:
+            Dictionary with file-level and function-level results
+        """
+        from .function_splitter import split_file_into_functions
+        
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            code = f.read()
+        
+        # Split into functions
+        functions = split_file_into_functions(file_path)
+        
+        if not functions:
+            # Fallback to file-level analysis if no functions found
+            result = self.analyze(code)
+            result.details["file_path"] = file_path
+            result.details["analysis_mode"] = "file_level"
+            return {
+                "file_path": file_path,
+                "analysis_mode": "file_level",
+                "file_result": result.to_dict(),
+                "function_results": [],
+                "summary": {
+                    "total_functions": 0,
+                    "vulnerable_functions": 1 if result.vulnerable else 0,
+                    "max_probability": result.probability,
+                    "overall_vulnerable": result.vulnerable,
+                    "overall_risk_level": result.risk_level
+                }
+            }
+        
+        # Analyze each function
+        function_results = []
+        max_prob = 0.0
+        vulnerable_count = 0
+        highest_risk = "LOW"
+        risk_priority = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
+        
+        for func in functions:
+            result = self.analyze(func.code)
+            
+            func_result = {
+                "function_name": func.name,
+                "start_line": func.start_line,
+                "end_line": func.end_line,
+                "return_type": func.return_type,
+                "parameters": func.parameters,
+                "vulnerable": result.vulnerable,
+                "probability": result.probability,
+                "risk_level": result.risk_level,
+                "confidence": result.confidence,
+                "dangerous_apis": result.details.get("dangerous_apis_found", [])
+            }
+            function_results.append(func_result)
+            
+            if result.probability > max_prob:
+                max_prob = result.probability
+            
+            if result.vulnerable:
+                vulnerable_count += 1
+            
+            if risk_priority.get(result.risk_level, 0) > risk_priority.get(highest_risk, 0):
+                highest_risk = result.risk_level
+        
+        # Overall file is vulnerable if any function is vulnerable
+        overall_vulnerable = vulnerable_count > 0
+        
+        return {
+            "file_path": file_path,
+            "analysis_mode": "function_level",
+            "function_results": function_results,
+            "summary": {
+                "total_functions": len(functions),
+                "vulnerable_functions": vulnerable_count,
+                "max_probability": max_prob,
+                "overall_vulnerable": overall_vulnerable,
+                "overall_risk_level": highest_risk
+            }
+        }
+    
     def analyze_batch(self, codes: List[str], batch_size: int = 16) -> List[VulnerabilityResult]:
         """Analyze multiple code snippets with true batch processing."""
         results = []

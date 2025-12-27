@@ -1,6 +1,9 @@
 # GitHub Actions Workflow to automatically build and publish releases
 #
-# Triggers when a new tag is pushed (e.g., v1.0.0)
+# Triggers:
+#   1. When a new tag is pushed (e.g., v1.0.0) - creates versioned release
+#   2. When CI/CD or scanner code is updated on main - updates 'latest' release
+#   3. Manual workflow_dispatch
 #
 # Usage:
 #   git tag v1.0.0
@@ -12,12 +15,21 @@ on:
   push:
     tags:
       - 'v*.*.*'
+    branches:
+      - main
+      - master
+    paths:
+      - 'devign_pipeline/**'
+      - 'models/**'
+      - '.github/workflows/**'
+      - 'action.yml'
+      - 'build_scanner.py'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g., v1.0.0)'
+        description: 'Release version (e.g., v1.0.0 or latest)'
         required: true
-        default: 'v1.0.0'
+        default: 'latest'
 
 jobs:
   build-release:
@@ -37,10 +49,15 @@ jobs:
         id: version
         run: |
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+            VERSION="${{ inputs.version }}"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
           else
-            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            # Push to main branch - use 'latest'
+            VERSION="latest"
           fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
       
       - name: Create release directory structure
         run: |
