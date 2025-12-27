@@ -136,6 +136,11 @@ class BaselineConfig:
     token_mask_prob: float = 0.03
     mask_token_id: int = 1
     
+    # ============= TOKEN TYPE EMBEDDING =============
+    use_token_type_embedding: bool = True  # Enable vulnerability-relevant token type embedding
+    num_token_types: int = 16              # Number of extended token types (from token_types.py)
+    token_type_embed_dim: int = 32         # Smaller than main embed_dim for efficiency
+    
     # ============= CHECKPOINTING =============
     save_every: int = 5
     

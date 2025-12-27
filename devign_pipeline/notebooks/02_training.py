@@ -95,7 +95,7 @@ else:
 
 # %%
 class DevignDataset(Dataset):
-    """Load preprocessed .npz file with segment-aware features."""
+    """Load preprocessed .npz file with segment-aware features and token type IDs."""
     
     SEP_TOKEN_ID = 4
     
@@ -114,6 +114,11 @@ class DevignDataset(Dataset):
         self.input_ids = data['input_ids']
         self.labels = data['labels']
         self.attention_mask = data.get('attention_mask', None)
+        
+        # Load token_type_ids if available (for extended token type embeddings)
+        self.extended_token_type_ids = data.get('token_type_ids', None)
+        if self.extended_token_type_ids is not None:
+            print(f"  Loaded token_type_ids: {self.extended_token_type_ids.shape}")
         
         self.vuln_features = None
         if self.load_vuln_features:
@@ -176,6 +181,13 @@ class DevignDataset(Dataset):
             'labels': torch.tensor(self.labels[idx], dtype=torch.long),
             'lengths': torch.tensor(orig_len, dtype=torch.long)
         }
+        
+        # Add extended token type IDs if available (for vulnerability-relevant type embedding)
+        if self.extended_token_type_ids is not None:
+            ext_type_ids = self.extended_token_type_ids[idx][:self.max_seq_length]
+            if len(ext_type_ids) < self.max_seq_length:
+                ext_type_ids = np.pad(ext_type_ids, (0, self.max_seq_length - len(ext_type_ids)), constant_values=0)
+            item['extended_token_type_ids'] = torch.tensor(ext_type_ids, dtype=torch.long)
         
         if self.load_vuln_features:
             if self.vuln_features is not None:
@@ -262,6 +274,7 @@ class ImprovedHybridBiGRUVulnDetector(nn.Module):
     2. Multi-head attention pooling
     3. Token augmentation during training
     4. LayerNorm before classifier
+    5. Token type embedding for vulnerability-relevant semantic types
     """
     
     def __init__(self, config: BaselineConfig):
@@ -273,9 +286,19 @@ class ImprovedHybridBiGRUVulnDetector(nn.Module):
         self.token_mask_prob = getattr(config, 'token_mask_prob', 0.03)
         self.mask_token_id = getattr(config, 'mask_token_id', 1)
         
-        # Embedding
+        # Token embedding
         self.embedding = nn.Embedding(config.vocab_size, config.embed_dim, padding_idx=0)
         self.embed_dropout = nn.Dropout(config.embedding_dropout)
+        
+        # Token type embedding (for vulnerability-relevant types)
+        self.use_token_type_embedding = getattr(config, 'use_token_type_embedding', True)
+        if self.use_token_type_embedding:
+            num_token_types = getattr(config, 'num_token_types', 16)
+            token_type_embed_dim = getattr(config, 'token_type_embed_dim', 32)
+            self.token_type_embedding = nn.Embedding(num_token_types, token_type_embed_dim, padding_idx=0)
+            # Project token type embedding to match embed_dim for additive combination
+            self.token_type_proj = nn.Linear(token_type_embed_dim, config.embed_dim)
+            print(f"  Token type embedding: {num_token_types} types -> {token_type_embed_dim}d -> {config.embed_dim}d")
         
         # BiGRU
         self.gru = nn.GRU(
@@ -360,12 +383,20 @@ class ImprovedHybridBiGRUVulnDetector(nn.Module):
         vuln_features=None, 
         lengths=None,
         token_type_ids=None, 
-        sep_pos=None
+        sep_pos=None,
+        extended_token_type_ids=None,
     ):
         B, L = input_ids.shape
         
         augmented_ids = self.apply_token_augmentation(input_ids, attention_mask)
         embedded = self.embedding(augmented_ids)
+        
+        # Add token type embedding if available and enabled
+        if self.use_token_type_embedding and extended_token_type_ids is not None:
+            type_embedded = self.token_type_embedding(extended_token_type_ids)
+            type_embedded = self.token_type_proj(type_embedded)
+            embedded = embedded + type_embedded
+        
         embedded = self.embed_dropout(embedded)
         
         use_packing = getattr(self.config, 'use_packed_sequences', True)
@@ -695,18 +726,21 @@ def update_bn_for_swa(loader: DataLoader, model: nn.Module, device: torch.device
         attention_mask = batch["attention_mask"].to(device, non_blocking=True)
         vuln_features = batch.get("vuln_features")
         lengths = batch.get("lengths")
+        extended_token_type_ids = batch.get("extended_token_type_ids")
         
         if vuln_features is not None:
             vuln_features = vuln_features.to(device, non_blocking=True)
         if lengths is not None:
             lengths = lengths.to(device, non_blocking=True)
+        if extended_token_type_ids is not None:
+            extended_token_type_ids = extended_token_type_ids.to(device, non_blocking=True)
         
         b = input_ids.size(0)
         momentum = b / float(n + b)
         for module in momenta.keys():
             module.momentum = momentum
         
-        model(input_ids, attention_mask, vuln_features, lengths)
+        model(input_ids, attention_mask, vuln_features, lengths, extended_token_type_ids=extended_token_type_ids)
         n += b
     
     for module, mom in momenta.items():
@@ -723,18 +757,22 @@ def _prepare_batch(batch: Dict, device: torch.device) -> Tuple[torch.Tensor, ...
     """Prepare batch tensors for forward pass.
     
     Returns:
-        Tuple of (input_ids, attention_mask, labels, vuln_features, lengths)
+        Tuple of (input_ids, attention_mask, labels, vuln_features, lengths, extended_token_type_ids)
     """
     input_ids = batch['input_ids'].to(device, non_blocking=True)
     attention_mask = batch['attention_mask'].to(device, non_blocking=True)
     labels = batch['labels'].to(device, non_blocking=True)
     vuln_features = batch.get('vuln_features')
     lengths = batch['lengths'].to(device, non_blocking=True)
+    extended_token_type_ids = batch.get('extended_token_type_ids')
     
     if vuln_features is not None:
         vuln_features = vuln_features.to(device, non_blocking=True)
     
-    return input_ids, attention_mask, labels, vuln_features, lengths
+    if extended_token_type_ids is not None:
+        extended_token_type_ids = extended_token_type_ids.to(device, non_blocking=True)
+    
+    return input_ids, attention_mask, labels, vuln_features, lengths, extended_token_type_ids
 
 
 def _forward_pass(
@@ -743,11 +781,18 @@ def _forward_pass(
     attention_mask: torch.Tensor,
     vuln_features: Optional[torch.Tensor],
     lengths: torch.Tensor,
-    config: BaselineConfig
+    config: BaselineConfig,
+    extended_token_type_ids: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Run forward pass with AMP."""
     with autocast(device_type='cuda', enabled=config.use_amp):
-        logits = model(input_ids, attention_mask, vuln_features, lengths)
+        logits = model(
+            input_ids, 
+            attention_mask, 
+            vuln_features, 
+            lengths,
+            extended_token_type_ids=extended_token_type_ids,
+        )
     return logits
 
 
@@ -776,10 +821,16 @@ def train_epoch(
     optimizer.zero_grad()
     
     for i, batch in enumerate(tqdm(loader, desc="Training", leave=False)):
-        input_ids, attention_mask, labels, vuln_features, lengths = _prepare_batch(batch, device)
+        input_ids, attention_mask, labels, vuln_features, lengths, extended_token_type_ids = _prepare_batch(batch, device)
         
         with autocast(device_type='cuda', enabled=config.use_amp):
-            logits = model(input_ids, attention_mask, vuln_features, lengths)
+            logits = model(
+                input_ids, 
+                attention_mask, 
+                vuln_features, 
+                lengths,
+                extended_token_type_ids=extended_token_type_ids,
+            )
             loss = criterion(logits, labels)
             loss = loss / config.accumulation_steps
         
@@ -807,8 +858,8 @@ def train_epoch(
         all_probs, all_labels = [], []
         with torch.no_grad():
             for batch in loader:
-                input_ids, attention_mask, labels_batch, vuln_features, lengths = _prepare_batch(batch, device)
-                logits = _forward_pass(model, input_ids, attention_mask, vuln_features, lengths, config)
+                input_ids, attention_mask, labels_batch, vuln_features, lengths, extended_token_type_ids = _prepare_batch(batch, device)
+                logits = _forward_pass(model, input_ids, attention_mask, vuln_features, lengths, config, extended_token_type_ids)
                 
                 probs = get_probs_from_logits(logits).cpu().numpy()
                 all_probs.extend(probs)
@@ -870,12 +921,22 @@ def evaluate(
         labels = batch['labels'].to(device, non_blocking=True)
         vuln_features = batch.get('vuln_features')
         lengths = batch['lengths'].to(device, non_blocking=True)
+        extended_token_type_ids = batch.get('extended_token_type_ids')
         
         if vuln_features is not None:
             vuln_features = vuln_features.to(device, non_blocking=True)
         
+        if extended_token_type_ids is not None:
+            extended_token_type_ids = extended_token_type_ids.to(device, non_blocking=True)
+        
         with autocast(device_type='cuda', enabled=config.use_amp):
-            logits = model(input_ids, attention_mask, vuln_features, lengths)
+            logits = model(
+                input_ids, 
+                attention_mask, 
+                vuln_features, 
+                lengths,
+                extended_token_type_ids=extended_token_type_ids,
+            )
             loss = criterion(logits, labels)
         
         total_loss += loss.item()

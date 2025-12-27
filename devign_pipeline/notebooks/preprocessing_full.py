@@ -93,7 +93,7 @@ PDG_SLICE_CONFIG = {
     'criterion_cluster_gap': 5,      # Cluster nearby criteria
     
     # Separator settings
-    'insert_separators': True,       # Insert [SEP] between segments
+    'insert_separators': False,      # Disabled - [SEP] tokens removed
     'separator_token': '[SEP]',      
     'separator_gap': 2,              # Gap > 2 triggers separator
     
@@ -101,8 +101,8 @@ PDG_SLICE_CONFIG = {
     'preserve_defense_statements': True,  # Keep null/bounds checks near criteria
     'min_slice_tokens': 40,               # Expand slice if too short
     
-    # SEP normalization (NEW)
-    'normalize_separators': True,
+    # SEP normalization (disabled when insert_separators=False)
+    'normalize_separators': False,
     'min_tokens_between_sep': 6,
     'max_sep_ratio': 0.08,
     
@@ -283,6 +283,14 @@ else:
         get_canonical_vocab_tokens
     )
 
+# Import token type extraction for all tokenizer types
+from src.tokenization.token_types import (
+    get_token_type_ids_for_sequence,
+    pad_token_type_ids,
+    NUM_EXTENDED_TOKEN_TYPES,
+    ExtendedTokenType,
+)
+
 if FEATURE_CONFIG['extract_features']:
     from src.vuln.slice_features import extract_slice_features, extract_slice_features_batch, SLICE_FEATURE_NAMES
     from src.vuln.dictionary import VulnDictionary
@@ -461,15 +469,9 @@ def estimate_tokens(code: str) -> int:
     return len(words) + len(multi_ops) + len(single_ops)
 
 
-def insert_sep_in_middle(code: str, sep_token: str = "[SEP]") -> str:
-    """Insert SEP token in the middle of code for fallback cases."""
-    lines = code.strip().split('\n')
-    if len(lines) <= 1:
-        return f"{code.strip()} {sep_token}"
-    mid = len(lines) // 2
-    before = '\n'.join(lines[:mid])
-    after = '\n'.join(lines[mid:])
-    return f"{before} {sep_token} {after}"
+def normalize_fallback_code(code: str) -> str:
+    """Normalize code for fallback cases (when PDG slicing fails or produces short slices)."""
+    return code.strip()
 
 
 def process_pdg_slice_batch(df, batch_size=500):
@@ -528,7 +530,7 @@ def process_pdg_slice_batch(df, batch_size=500):
                     quality_stats['passed_quality_check'] += 1
                 else:
                     # Slice lacks both sufficient tokens AND defense+call patterns - use fallback
-                    sliced = insert_sep_in_middle(code)
+                    sliced = normalize_fallback_code(code)
                     quality_stats['expanded_short_slices'] += 1
                     fallback_count += 1
                 
@@ -541,7 +543,7 @@ def process_pdg_slice_batch(df, batch_size=500):
                 
                 sliced_codes.append(sliced)
             except Exception as e:
-                sliced_codes.append(insert_sep_in_middle(code))
+                sliced_codes.append(normalize_fallback_code(code))
                 fallback_count += 1
                 exception_counts[type(e).__name__] += 1
     
@@ -928,6 +930,62 @@ if train_vec_stats['top_unk_tokens']:
     for tok, count in train_vec_stats['top_unk_tokens'][:15]:
         print(f"  {tok}: {count}")
 
+# %% [markdown]
+# ## 9.1. Extract Token Type IDs
+
+# %%
+print("\n" + "=" * 60)
+print("STEP 6.1: EXTRACTING TOKEN TYPE IDs")
+print("=" * 60)
+
+
+def extract_token_type_ids_batch(tokens_list: list, max_len: int) -> np.ndarray:
+    """Extract token type IDs for a batch of token sequences.
+    
+    Args:
+        tokens_list: List of token lists
+        max_len: Maximum sequence length
+    
+    Returns:
+        numpy array of shape (n_samples, max_len) with token type IDs
+    """
+    n_samples = len(tokens_list)
+    token_type_ids_arr = np.zeros((n_samples, max_len), dtype=np.int32)
+    
+    for i, tokens in enumerate(tqdm(tokens_list, desc="Extracting token types")):
+        type_ids = get_token_type_ids_for_sequence(tokens)
+        padded_type_ids = pad_token_type_ids(type_ids, max_len, pad_value=0)
+        token_type_ids_arr[i] = padded_type_ids
+    
+    return token_type_ids_arr
+
+
+print("Extracting token type IDs for train set...")
+train_token_type_ids = extract_token_type_ids_batch(train_tokens, max_len)
+
+print("Extracting token type IDs for val set...")
+val_token_type_ids = extract_token_type_ids_batch(val_tokens, max_len)
+
+print("Extracting token type IDs for test set...")
+test_token_type_ids = extract_token_type_ids_batch(test_tokens, max_len)
+
+print(f"\nToken Type ID shapes:")
+print(f"  Train: {train_token_type_ids.shape}")
+print(f"  Val: {val_token_type_ids.shape}")
+print(f"  Test: {test_token_type_ids.shape}")
+
+# Print token type distribution for train set
+from collections import Counter as TypeCounter
+train_type_counts = TypeCounter(train_token_type_ids.flatten())
+print(f"\nToken type distribution (train, top 10):")
+for type_id, count in sorted(train_type_counts.items(), key=lambda x: -x[1])[:10]:
+    try:
+        type_name = ExtendedTokenType(type_id).name
+    except ValueError:
+        type_name = f"UNKNOWN_{type_id}"
+    pct = count / train_token_type_ids.size * 100
+    print(f"  {type_name}: {count:,} ({pct:.1f}%)")
+
 # %% Debug Export - Tokenization Debugging
 if DEBUG_EXPORT:
     print("\n" + "=" * 60)
@@ -1119,25 +1177,28 @@ np.savez_compressed(
     os.path.join(OUTPUT_DIR, 'train.npz'),
     input_ids=train_input_ids,
     attention_mask=train_attention_mask,
+    token_type_ids=train_token_type_ids,
     labels=train_labels
 )
-print(f"Saved: train.npz {train_input_ids.shape}")
+print(f"Saved: train.npz {train_input_ids.shape} (with token_type_ids)")
 
 np.savez_compressed(
     os.path.join(OUTPUT_DIR, 'val.npz'),
     input_ids=val_input_ids,
     attention_mask=val_attention_mask,
+    token_type_ids=val_token_type_ids,
     labels=val_labels
 )
-print(f"Saved: val.npz {val_input_ids.shape}")
+print(f"Saved: val.npz {val_input_ids.shape} (with token_type_ids)")
 
 np.savez_compressed(
     os.path.join(OUTPUT_DIR, 'test.npz'),
     input_ids=test_input_ids,
     attention_mask=test_attention_mask,
+    token_type_ids=test_token_type_ids,
     labels=test_labels
 )
-print(f"Saved: test.npz {test_input_ids.shape}")
+print(f"Saved: test.npz {test_input_ids.shape} (with token_type_ids)")
 
 # === 2. Save vulnerability features (if extracted) ===
 if train_vuln_features is not None:
@@ -1176,6 +1237,7 @@ config = {
     'tokenizer_config': TOKENIZER_CONFIG,
     'vocab_size': len(vocab),
     'max_seq_length': max_len,
+    'num_token_types': NUM_EXTENDED_TOKEN_TYPES,
     'train_samples': len(train_df),
     'val_samples': len(val_df),
     'test_samples': len(test_df),

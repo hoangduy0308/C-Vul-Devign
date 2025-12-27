@@ -12,6 +12,7 @@ from src.ast.parser import CFamilyParser, ParseResult, Language
 
 
 class TokenType(Enum):
+    # Base token types
     KEYWORD = 'keyword'
     IDENTIFIER = 'identifier'
     TYPE = 'type'
@@ -23,6 +24,18 @@ class TokenType(Enum):
     PREPROCESSOR = 'preproc'
     COMMENT = 'comment'
     UNKNOWN = 'unknown'
+    
+    # Extended vulnerability-relevant types
+    DANGEROUS_CALL = 'dangerous_call'      # strcpy, sprintf, gets, etc.
+    SAFE_CALL = 'safe_call'                # strncpy, snprintf, etc.
+    NULL_CHECK = 'null_check'              # comparisons with NULL, 0, nullptr
+    BOUNDS_CHECK = 'bounds_check'          # length/size comparisons
+    DEREF = 'deref'                        # pointer dereference: *, ->
+    ARRAY_ACCESS = 'array_access'          # []
+    ALLOC = 'alloc'                        # malloc, calloc, realloc
+    FREE = 'free'                          # free
+    RETURN = 'return'                      # return statement
+    ERROR_HANDLING = 'error_handling'      # goto, error labels
 
 
 C_KEYWORDS = {
