@@ -27,16 +27,40 @@ import os
 import json
 import glob
 import subprocess
+import re
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from dataclasses import dataclass
 
 sys.path.insert(0, str(Path(__file__).parent))
+
+# Try to import tree-sitter for accurate comment stripping
+try:
+    import tree_sitter_c as tsc
+    from tree_sitter import Language, Parser
+    _TREE_SITTER_AVAILABLE = True
+except ImportError:
+    _TREE_SITTER_AVAILABLE = False
 
 from devign_infer import VulnerabilityDetector, SARIFReporter, InferenceConfig
 from devign_infer.config import find_model_path, find_vocab_path, validate_paths
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
+
+# Cached tree-sitter parser
+_ts_parser = None
+
+def _get_ts_parser():
+    """Get or create tree-sitter C parser."""
+    global _ts_parser
+    if not _TREE_SITTER_AVAILABLE:
+        return None
+    if _ts_parser is None:
+        try:
+            _ts_parser = Parser(Language(tsc.language()))
+        except Exception:
+            return None
+    return _ts_parser
 
 
 @dataclass
@@ -254,22 +278,288 @@ def format_results_json(results: List[ScanResult]) -> str:
     return json.dumps(data, indent=2)
 
 
+def _strip_all_comments(content: str) -> str:
+    """
+    Remove all C/C++ comments from file content, handling multi-line block comments.
+    
+    Uses tree-sitter for accurate comment detection when available (handles edge cases
+    like raw string literals R"(...)"), falls back to regex otherwise.
+    
+    Args:
+        content: Full file content as string
+        
+    Returns:
+        Content with all comments replaced by spaces (to preserve line numbers)
+    """
+    # Try tree-sitter first for accurate parsing
+    result = _strip_comments_tree_sitter(content)
+    if result is not None:
+        return result
+    
+    # Fallback to regex
+    return _strip_comments_regex(content)
+
+
+def _strip_comments_tree_sitter(content: str) -> Optional[str]:
+    """Use tree-sitter to accurately identify and remove comments."""
+    parser = _get_ts_parser()
+    if parser is None:
+        return None
+    
+    try:
+        tree = parser.parse(bytes(content, 'utf8'))
+        
+        # Collect all comment ranges
+        comment_ranges = []
+        
+        def find_comments(node):
+            if node.type == 'comment':
+                comment_ranges.append((node.start_byte, node.end_byte, node.text))
+            for child in node.children:
+                find_comments(child)
+        
+        find_comments(tree.root_node)
+        
+        if not comment_ranges:
+            return content  # No comments found
+        
+        # Build result by replacing comments with appropriate whitespace
+        result = []
+        last_end = 0
+        content_bytes = content.encode('utf8')
+        
+        for start, end, comment_text in sorted(comment_ranges):
+            # Add content before this comment
+            result.append(content_bytes[last_end:start].decode('utf8', errors='ignore'))
+            # Replace comment with newlines to preserve line numbers
+            newline_count = comment_text.count(b'\n')
+            result.append('\n' * newline_count)
+            last_end = end
+        
+        # Add remaining content after last comment
+        result.append(content_bytes[last_end:].decode('utf8', errors='ignore'))
+        
+        return ''.join(result)
+        
+    except Exception:
+        return None  # Fallback to regex
+
+
+def _strip_comments_regex(content: str) -> str:
+    """Fallback regex-based comment stripping."""
+    # Pattern to match strings, single-line comments (with line continuation), or block comments
+    # Order matters: strings first to avoid matching // or /* inside strings
+    pattern = r'''
+        (?P<string>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')  # String literals
+        |(?P<line_comment>//(?:[^\n\\]|\\.|\\\n)*)       # Single-line comment (handles \ continuation)
+        |(?P<block_comment>/\*[\s\S]*?\*/)               # Block comment (non-greedy)
+    '''
+    
+    def replacer(match):
+        if match.group('string'):
+            return match.group('string')  # Keep strings
+        elif match.group('line_comment'):
+            # Preserve newlines from line continuations to maintain line numbers
+            comment = match.group('line_comment')
+            return '\n' * comment.count('\n')
+        elif match.group('block_comment'):
+            # Replace block comment with same number of newlines to preserve line numbers
+            return '\n' * match.group('block_comment').count('\n')
+        return ''
+    
+    return re.sub(pattern, replacer, content, flags=re.VERBOSE)
+
+
+def find_dangerous_api_lines(
+    file_path: str, 
+    dangerous_apis: List[str],
+    file_content: Optional[str] = None,
+    stripped_content: Optional[str] = None
+) -> Tuple[int, int, List[int]]:
+    """Find line numbers where dangerous APIs are used.
+    
+    Uses regex with word boundaries to avoid false positives from:
+    - Comments (// TODO: fix strcpy) - including multi-line block comments
+    - Variable names (my_strcpy)
+    - String literals ("use strcpy carefully")
+    
+    Args:
+        file_path: Path to the file
+        dangerous_apis: List of API names to search for
+        file_content: Optional pre-loaded file content to avoid redundant I/O
+        stripped_content: Optional pre-stripped content (comments already removed)
+    
+    Returns:
+        Tuple of (min_line, max_line, all_lines):
+        - min_line, max_line: bounding box for backward compatibility
+        - all_lines: list of specific line numbers with dangerous calls
+    """
+    import re
+    
+    if not dangerous_apis:
+        return 1, 1, []
+    
+    try:
+        # Get file content
+        if file_content is None:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                file_content = f.read()
+        
+        # Strip all comments (including multi-line block comments)
+        if stripped_content is None:
+            stripped_content = _strip_all_comments(file_content)
+        
+        lines = stripped_content.splitlines()
+        
+        found_lines = []
+        for i, line in enumerate(lines, 1):
+            for api in dangerous_apis:
+                # Use word boundary regex to match function calls: api_name(
+                # This avoids matching my_strcpy or strcpy_wrapper
+                pattern = rf'\b{re.escape(api)}\s*\('
+                if re.search(pattern, line):
+                    found_lines.append(i)
+                    break
+        
+        if found_lines:
+            return min(found_lines), max(found_lines), found_lines
+    except Exception:
+        pass
+    
+    return 1, 1, []
+
+
 def generate_sarif(
     results: List[ScanResult],
     base_path: str = ".",
-    threshold: float = 0.5
+    threshold: float = 0.5,
+    max_cache_bytes: int = 50 * 1024 * 1024,  # 50MB default
+    max_file_size: int = 1024 * 1024,  # Skip caching files > 1MB
 ) -> Dict[str, Any]:
-    """Generate SARIF report from scan results."""
+    """Generate SARIF report from scan results.
+    
+    Args:
+        results: List of scan results
+        base_path: Base path for relative file paths
+        threshold: Vulnerability threshold
+        max_cache_bytes: Maximum total bytes to cache (default 50MB)
+        max_file_size: Skip caching files larger than this (default 1MB)
+    """
+    from collections import OrderedDict
+    
     reporter = SARIFReporter(base_path=base_path)
+    
+    # LRU-style cache with byte-size limit to avoid memory issues with large files
+    # Stores: path -> (content, stripped_content, size_bytes)
+    file_cache: OrderedDict[str, tuple] = OrderedDict()
+    cache_bytes = 0
+    
+    # Temporary cache for large files (single file at a time to avoid memory bloat)
+    # This prevents re-reading the same large file for consecutive findings
+    large_file_cache: Dict[str, tuple] = {}  # path -> (content, stripped)
     
     for result in results:
         if result.vulnerable and not result.error:
+            # Get file content from cache or read from disk
+            if result.file_path not in file_cache:
+                try:
+                    # Check large file cache first (for consecutive findings in same large file)
+                    if result.file_path in large_file_cache:
+                        content, stripped = large_file_cache[result.file_path]
+                        start_line, end_line, all_lines = find_dangerous_api_lines(
+                            result.file_path, 
+                            result.dangerous_apis,
+                            file_content=content,
+                            stripped_content=stripped
+                        )
+                        reporter.add_finding(
+                            file_path=result.file_path,
+                            probability=result.probability,
+                            risk_level=result.risk_level,
+                            dangerous_apis=result.dangerous_apis,
+                            start_line=start_line,
+                            end_line=end_line,
+                            threshold=threshold,
+                            all_lines=all_lines
+                        )
+                        continue
+                    
+                    with open(result.file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                    
+                    content_size = len(content.encode('utf-8', errors='ignore'))
+                    
+                    # Skip LRU caching very large files, but use temporary cache
+                    if content_size > max_file_size:
+                        stripped = _strip_all_comments(content)
+                        
+                        # Cache for consecutive findings in same large file
+                        # Clear previous large file to avoid memory bloat
+                        large_file_cache.clear()
+                        large_file_cache[result.file_path] = (content, stripped)
+                        
+                        start_line, end_line, all_lines = find_dangerous_api_lines(
+                            result.file_path, 
+                            result.dangerous_apis,
+                            file_content=content,
+                            stripped_content=stripped
+                        )
+                        reporter.add_finding(
+                            file_path=result.file_path,
+                            probability=result.probability,
+                            risk_level=result.risk_level,
+                            dangerous_apis=result.dangerous_apis,
+                            start_line=start_line,
+                            end_line=end_line,
+                            threshold=threshold,
+                            all_lines=all_lines
+                        )
+                        continue
+                    
+                    stripped = _strip_all_comments(content)
+                    entry_size = content_size * 2  # Approximate: raw + stripped
+                    
+                    # Evict oldest entries until we have space
+                    while cache_bytes + entry_size > max_cache_bytes and file_cache:
+                        _, evicted = file_cache.popitem(last=False)
+                        cache_bytes -= evicted[2]
+                    
+                    file_cache[result.file_path] = (content, stripped, entry_size)
+                    cache_bytes += entry_size
+                    
+                except PermissionError as e:
+                    # Critical error - log and skip this finding entirely
+                    print(f"Warning: Permission denied reading {result.file_path}: {e}", file=sys.stderr)
+                    continue  # Skip this finding, don't cache invalid data
+                except OSError as e:
+                    # File system errors - log and skip
+                    print(f"Warning: Cannot read {result.file_path}: {e}", file=sys.stderr)
+                    continue
+                except Exception as e:
+                    # Unexpected errors - log with details for debugging
+                    print(f"Warning: Error processing {result.file_path}: {type(e).__name__}: {e}", file=sys.stderr)
+                    continue  # Skip rather than pollute cache with empty data
+            else:
+                # Move to end (most recently used)
+                file_cache.move_to_end(result.file_path)
+            
+            content, stripped, _ = file_cache[result.file_path]
+            
+            start_line, end_line, all_lines = find_dangerous_api_lines(
+                result.file_path, 
+                result.dangerous_apis,
+                file_content=content,
+                stripped_content=stripped
+            )
             reporter.add_finding(
                 file_path=result.file_path,
                 probability=result.probability,
                 risk_level=result.risk_level,
                 dangerous_apis=result.dangerous_apis,
-                threshold=threshold
+                start_line=start_line,
+                end_line=end_line,
+                threshold=threshold,
+                all_lines=all_lines
             )
     
     return reporter.generate()

@@ -33,6 +33,7 @@ class VulnerabilityFinding:
     probability: float
     risk_level: str
     dangerous_apis: List[str]
+    related_lines: Optional[List[int]] = None  # Additional lines for relatedLocations
     
     def fingerprint(self) -> str:
         """Generate unique fingerprint for deduplication."""
@@ -127,9 +128,22 @@ class SARIFReporter:
         start_line: int = 1,
         end_line: Optional[int] = None,
         message: Optional[str] = None,
-        threshold: float = 0.5
+        threshold: float = 0.5,
+        all_lines: Optional[List[int]] = None
     ) -> None:
-        """Add a vulnerability finding."""
+        """Add a vulnerability finding.
+        
+        Args:
+            file_path: Path to the file
+            probability: Vulnerability probability (0-1)
+            risk_level: Risk level string
+            dangerous_apis: List of dangerous APIs found
+            start_line: Primary start line (bounding box min)
+            end_line: Primary end line (bounding box max)
+            message: Custom message
+            threshold: Minimum probability threshold
+            all_lines: Optional list of specific line numbers for relatedLocations
+        """
         if probability < threshold:
             return
         
@@ -144,12 +158,23 @@ class SARIFReporter:
             message = f"Potential vulnerability detected (probability: {probability:.1%}, risk: {risk_level})"
             if dangerous_apis:
                 message += f". Dangerous APIs found: {', '.join(dangerous_apis[:5])}"
+            # Add line info if multiple distinct locations
+            if all_lines and len(all_lines) > 1:
+                message += f". Found at lines: {', '.join(map(str, all_lines[:10]))}"
+                if len(all_lines) > 10:
+                    message += f" (+{len(all_lines) - 10} more)"
+        
+        # Use first line as primary location for better UX
+        primary_line = all_lines[0] if all_lines else start_line
         
         location = Location(
             file_path=file_path,
-            start_line=start_line,
-            end_line=end_line or start_line
+            start_line=primary_line,
+            end_line=primary_line  # Single line for primary location
         )
+        
+        # Store additional lines for relatedLocations (skip the first one, it's primary)
+        related = all_lines[1:] if all_lines and len(all_lines) > 1 else None
         
         finding = VulnerabilityFinding(
             rule_id=rule_id,
@@ -158,7 +183,8 @@ class SARIFReporter:
             severity=severity,
             probability=probability,
             risk_level=risk_level,
-            dangerous_apis=dangerous_apis
+            dangerous_apis=dangerous_apis,
+            related_lines=related
         )
         
         self.findings.append(finding)
@@ -178,7 +204,7 @@ class SARIFReporter:
     
     def _build_result(self, finding: VulnerabilityFinding) -> Dict[str, Any]:
         """Build a SARIF result object from a finding."""
-        return {
+        result = {
             "ruleId": finding.rule_id,
             "ruleIndex": list(self.RULES.keys()).index(finding.rule_id),
             "level": finding.severity,
@@ -207,6 +233,27 @@ class SARIFReporter:
                 "dangerousApis": finding.dangerous_apis
             }
         }
+        
+        # Add relatedLocations for additional dangerous API lines
+        if finding.related_lines:
+            related_locations = []
+            for i, line in enumerate(finding.related_lines[:20]):  # Limit to 20 related locations
+                related_locations.append({
+                    "id": i,
+                    "physicalLocation": {
+                        "artifactLocation": self._get_artifact_location(finding.location.file_path),
+                        "region": {
+                            "startLine": line,
+                            "endLine": line
+                        }
+                    },
+                    "message": {
+                        "text": f"Additional dangerous API usage at line {line}"
+                    }
+                })
+            result["relatedLocations"] = related_locations
+        
+        return result
     
     def generate(self) -> Dict[str, Any]:
         """Generate SARIF report."""

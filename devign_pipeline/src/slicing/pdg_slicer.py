@@ -11,18 +11,33 @@ Key differences from window-based slicer:
 """
 
 import re
+import logging
 from dataclasses import dataclass, field
 from typing import List, Optional, Set, Tuple
 from enum import Enum
 
 import sys
-sys.path.insert(0, 'F:/Work/C Vul Devign/devign_pipeline')
+from pathlib import Path
+# Add devign_pipeline root to path (relative to this file: src/slicing/pdg_slicer.py)
+_PIPELINE_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_PIPELINE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PIPELINE_ROOT))
+
+# Try to import tree-sitter for accurate parsing (fallback to regex if unavailable)
+try:
+    import tree_sitter_c as tsc
+    from tree_sitter import Language, Parser
+    _TREE_SITTER_AVAILABLE = True
+except ImportError:
+    _TREE_SITTER_AVAILABLE = False
 
 from src.ast.parser import CFamilyParser, ParseResult
 from src.graphs.cfg import CFG, build_cfg
 from src.graphs.dfg import DFG, build_dfg
 from src.graphs.pdg import PDG, PDGBuilder, build_pdg
 from src.slicing.utils import DEFENSE_TOKENS
+
+logger = logging.getLogger(__name__)
 
 
 class PDGSliceType(Enum):
@@ -79,6 +94,10 @@ class PDGSliceConfig:
     # Deduplication settings
     deduplicate_statements: bool = True
     max_duplicate_calls: int = 2  # Keep at most 2 instances of same call pattern
+    
+    # Guard detection settings
+    guard_scan_max_lines: int = 50  # How far back to scan for guards
+    guard_body_max_lines: int = 20  # Max lines to search for guard block end (e.g., matching brace)
 
 
 @dataclass
@@ -294,6 +313,487 @@ class PDGSlicer:
                 defense_lines.add(i)
         return defense_lines
     
+    def _find_defense_lines_near(self, code: str, criterion_lines: List[int], radius: int = 10) -> Set[int]:
+        """Find defense lines within radius of criterion lines (fallback when guard detection fails).
+        
+        Only includes return/break/goto/continue statements that are near criterion lines,
+        avoiding flooding the slice with unrelated defense statements from elsewhere in the function.
+        """
+        code_lines = code.split('\n')
+        defense_lines = set()
+        defense_pattern = re.compile(r'\b(return|goto|break|continue)\b')
+        
+        for criterion in criterion_lines:
+            start = max(1, criterion - radius)
+            end = min(len(code_lines), criterion + radius)
+            for line_num in range(start, end + 1):
+                if line_num <= len(code_lines):
+                    if defense_pattern.search(code_lines[line_num - 1]):
+                        defense_lines.add(line_num)
+        return defense_lines
+    
+    # === Guard detection helpers ===
+    
+    # C and C++ keywords/types to filter out when extracting variable names
+    _C_KEYWORDS = frozenset({
+        # C keywords
+        'if', 'else', 'return', 'sizeof', 'int', 'char', 'void', 'NULL',
+        'true', 'false', 'while', 'for', 'switch', 'case', 'break', 'continue',
+        'goto', 'struct', 'union', 'enum', 'typedef', 'const', 'static',
+        'unsigned', 'signed', 'long', 'short', 'double', 'float', 'extern',
+        'volatile', 'register', 'auto', 'inline', 'restrict', 'bool',
+        'uint8_t', 'uint16_t', 'uint32_t', 'uint64_t', 'int8_t', 'int16_t',
+        'int32_t', 'int64_t', 'size_t', 'ssize_t', 'ptrdiff_t', 'uintptr_t',
+        'assert', 'exit', 'abort', 'default', 'do',
+        # C++ keywords (Devign dataset may contain C++ code)
+        'class', 'template', 'typename', 'try', 'catch', 'throw', 'namespace',
+        'using', 'new', 'delete', 'public', 'private', 'protected', 'virtual',
+        'override', 'final', 'explicit', 'friend', 'operator', 'this',
+        'nullptr', 'constexpr', 'decltype', 'noexcept', 'static_cast',
+        'dynamic_cast', 'const_cast', 'reinterpret_cast', 'mutable',
+        # Common macros/functions
+        'define', 'ifdef', 'ifndef', 'endif', 'include', 'pragma',
+        'printf', 'fprintf', 'sprintf', 'snprintf', 'malloc', 'calloc',
+        'realloc', 'free', 'memcpy', 'memset', 'memmove', 'strlen', 'strcpy',
+        'strncpy', 'strcmp', 'strncmp', 'strcat', 'strncat'
+    })
+    
+    # Tree-sitter parser (initialized lazily)
+    _ts_parser: Optional['Parser'] = None
+    
+    @classmethod
+    def _get_ts_parser(cls) -> Optional['Parser']:
+        """Get or create tree-sitter parser for C."""
+        if not _TREE_SITTER_AVAILABLE:
+            return None
+        if cls._ts_parser is None:
+            try:
+                cls._ts_parser = Parser(Language(tsc.language()))
+            except Exception:
+                return None
+        return cls._ts_parser
+    
+    def _extract_vars_with_tree_sitter(self, line_text: str) -> Optional[Set[str]]:
+        """Extract variables using tree-sitter (more accurate than regex).
+        
+        Returns None if parsing fails, caller should fallback to regex.
+        """
+        parser = self._get_ts_parser()
+        if parser is None:
+            return None
+        
+        # Preprocessor directives (#define, #include, #pragma, etc.) cannot be
+        # wrapped in a function body - skip tree-sitter for these lines
+        stripped = line_text.strip()
+        if stripped.startswith('#'):
+            logger.debug(f"Preprocessor directive detected, skipping tree-sitter: {stripped[:50]}")
+            return None
+        
+        try:
+            # Wrap in a function to make it parseable
+            # Note: This may fail for snippets containing function definitions or complex macros
+            wrapper_prefix = "void __wrapper__() { "
+            wrapped = f"{wrapper_prefix}{line_text} }}"
+            tree = parser.parse(bytes(wrapped, 'utf8'))
+            
+            if tree.root_node.has_error:
+                # Log at debug level to help tune wrapper strategy if needed
+                logger.debug(
+                    f"Tree-sitter parse error for line (falling back to regex): "
+                    f"{line_text[:80]}{'...' if len(line_text) > 80 else ''}"
+                )
+                return None  # Parse error, fallback to regex
+            
+            vars_set: Set[str] = set()
+            # Track positions to exclude wrapper function identifiers
+            wrapper_end_byte = len(wrapper_prefix.encode('utf8'))
+            
+            def extract_identifiers(node):
+                """Recursively extract identifier nodes."""
+                # Skip nodes that are part of the wrapper (before our actual code)
+                if node.end_byte <= wrapper_end_byte:
+                    return
+                
+                # identifier nodes are variable references
+                if node.type == 'identifier':
+                    name = node.text.decode('utf8')
+                    # Exclude wrapper function name and keywords
+                    if name not in self._C_KEYWORDS and name != '__wrapper__':
+                        vars_set.add(name)
+                # For pointer/array access, get the base
+                elif node.type in ('field_expression', 'subscript_expression', 
+                                   'pointer_expression', 'call_expression'):
+                    # Get the leftmost identifier (base variable)
+                    for child in node.children:
+                        if child.type == 'identifier':
+                            name = child.text.decode('utf8')
+                            if name not in self._C_KEYWORDS and name != '__wrapper__':
+                                vars_set.add(name)
+                            break
+                        elif child.type in ('field_expression', 'subscript_expression',
+                                            'pointer_expression'):
+                            extract_identifiers(child)
+                            break
+                
+                for child in node.children:
+                    extract_identifiers(child)
+            
+            extract_identifiers(tree.root_node)
+            return vars_set
+            
+        except Exception as e:
+            logger.debug(
+                f"Tree-sitter exception for line (falling back to regex): "
+                f"{line_text[:60]}... - {type(e).__name__}: {e}"
+            )
+            return None  # Any error, fallback to regex
+    
+    def _extract_vars_from_line_regex(self, line_text: str) -> Set[str]:
+        """Extract variables using regex (fallback method)."""
+        # Strip comments and string literals first
+        clean_text = self._strip_string_literals(line_text)
+        # Remove single-line comments
+        clean_text = re.sub(r'//.*$', '', clean_text)
+        
+        # Extract all identifier-like tokens
+        all_matches = re.findall(r'\b[A-Za-z_]\w*\b', clean_text)
+        
+        # Filter out C keywords/types
+        vars_set = {m for m in all_matches if m not in self._C_KEYWORDS}
+        
+        # Also extract base from pointer/array patterns
+        # p->member, p.member → extract p
+        arrow_dot = re.findall(r'(\b[A-Za-z_]\w*)\s*(?:->|\.)', clean_text)
+        vars_set.update(v for v in arrow_dot if v not in self._C_KEYWORDS)
+        
+        # p[expr] → extract p and vars in expr
+        bracket_matches = re.findall(r'(\b[A-Za-z_]\w*)\s*\[', clean_text)
+        vars_set.update(v for v in bracket_matches if v not in self._C_KEYWORDS)
+        
+        # *p, &p → extract p
+        deref_addr = re.findall(r'[*&]\s*(\b[A-Za-z_]\w*)\b', clean_text)
+        vars_set.update(v for v in deref_addr if v not in self._C_KEYWORDS)
+        
+        return vars_set
+    
+    def _extract_vars_from_line(self, line_text: str) -> Set[str]:
+        """Extract variable identifiers from a line.
+        
+        Uses tree-sitter for accurate parsing when available,
+        falls back to regex-based extraction otherwise.
+        
+        Handles patterns like p->x → p, p[i] → p,i, *p → p
+        """
+        # Try tree-sitter first (more accurate)
+        ts_result = self._extract_vars_with_tree_sitter(line_text)
+        if ts_result is not None:
+            return ts_result
+        
+        # Fallback to regex
+        return self._extract_vars_from_line_regex(line_text)
+    
+    def _is_guard_predicate(self, line_text: str, vars_of_interest: Set[str]) -> bool:
+        """Return True if line is a guard checking vars_of_interest.
+        
+        Uses tree-sitter for accurate condition parsing when available,
+        falls back to regex patterns otherwise.
+        
+        Patterns detected:
+        - Null checks: if (!p), if (p == NULL), if (p == 0), if (NULL == p)
+        - Bounds checks: if (n > max), if (n >= max), if (idx >= len), if (n < 0)
+        - Assertions: assert(p != NULL), assert(n <= max)
+        """
+        stripped = line_text.strip()
+        
+        # Must be an if or assert
+        if not (stripped.startswith('if') or stripped.startswith('assert')):
+            return False
+        
+        # Try tree-sitter first for accurate parsing
+        result = self._is_guard_predicate_tree_sitter(line_text, vars_of_interest)
+        if result is not None:
+            return result
+        
+        # Fallback to regex-based detection
+        return self._is_guard_predicate_regex(line_text, vars_of_interest)
+    
+    def _is_guard_predicate_tree_sitter(self, line_text: str, vars_of_interest: Set[str]) -> Optional[bool]:
+        """Use tree-sitter to analyze guard predicate. Returns None if parsing fails."""
+        parser = self._get_ts_parser()
+        if parser is None:
+            return None
+        
+        # Skip preprocessor directives
+        if line_text.strip().startswith('#'):
+            return None
+        
+        try:
+            wrapper_prefix = "void __wrapper__() { "
+            wrapped = f"{wrapper_prefix}{line_text} }}"
+            tree = parser.parse(bytes(wrapped, 'utf8'))
+            
+            if tree.root_node.has_error:
+                return None
+            
+            # Find if_statement or expression_statement (for assert)
+            def find_condition_node(node):
+                """Find the condition expression in if/assert statements."""
+                if node.type == 'if_statement':
+                    # The condition is the parenthesized expression
+                    for child in node.children:
+                        if child.type == 'parenthesized_expression':
+                            return child
+                elif node.type == 'expression_statement':
+                    # Look for assert call
+                    for child in node.children:
+                        if child.type == 'call_expression':
+                            func_node = child.child_by_field_name('function')
+                            if func_node and func_node.text.decode('utf8') == 'assert':
+                                args = child.child_by_field_name('arguments')
+                                if args:
+                                    return args
+                
+                for child in node.children:
+                    result = find_condition_node(child)
+                    if result:
+                        return result
+                return None
+            
+            cond_node = find_condition_node(tree.root_node)
+            if not cond_node:
+                return None
+            
+            # Check if condition contains guard patterns
+            def has_guard_pattern(node) -> bool:
+                """Check if node represents a guard pattern."""
+                if node.type == 'unary_expression':
+                    # !p pattern
+                    op = node.child_by_field_name('operator')
+                    if op and op.text.decode('utf8') == '!':
+                        return True
+                        
+                elif node.type == 'binary_expression':
+                    op = node.child_by_field_name('operator')
+                    if op:
+                        op_text = op.text.decode('utf8')
+                        left = node.child_by_field_name('left')
+                        right = node.child_by_field_name('right')
+                        
+                        # Null checks: == NULL, != NULL, == 0
+                        if op_text in ('==', '!='):
+                            left_text = left.text.decode('utf8') if left else ''
+                            right_text = right.text.decode('utf8') if right else ''
+                            if 'NULL' in (left_text, right_text) or '0' in (left_text, right_text):
+                                return True
+                        
+                        # Bounds checks: <, >, <=, >=
+                        if op_text in ('<', '>', '<=', '>='):
+                            return True
+                
+                # Recurse for compound conditions (&&, ||)
+                for child in node.children:
+                    if has_guard_pattern(child):
+                        return True
+                return False
+            
+            # Check if condition mentions vars of interest and has guard pattern
+            cond_vars = self._extract_vars_from_line(cond_node.text.decode('utf8'))
+            if not (cond_vars & vars_of_interest):
+                return False
+            
+            return has_guard_pattern(cond_node)
+            
+        except Exception as e:
+            logger.debug(f"Tree-sitter guard detection failed: {type(e).__name__}: {e}")
+            return None
+    
+    def _is_guard_predicate_regex(self, line_text: str, vars_of_interest: Set[str]) -> bool:
+        """Fallback regex-based guard predicate detection."""
+        # Extract the condition part
+        paren_match = re.search(r'\(\s*(.+?)\s*\)', line_text)
+        if not paren_match:
+            return False
+        
+        condition = paren_match.group(1)
+        
+        # Extract vars mentioned in condition
+        cond_vars = self._extract_vars_from_line(condition)
+        
+        # Check if any var of interest is in the condition
+        if not (cond_vars & vars_of_interest):
+            return False
+        
+        # Check for guard patterns
+        # Null checks: !p, p == NULL, p == 0, NULL == p, p != NULL, !p
+        null_patterns = [
+            r'!\s*\w+',                      # !p
+            r'\w+\s*==\s*NULL',              # p == NULL
+            r'NULL\s*==\s*\w+',              # NULL == p
+            r'\w+\s*==\s*0\b',               # p == 0
+            r'0\s*==\s*\w+',                 # 0 == p
+            r'\w+\s*!=\s*NULL',              # p != NULL (assertion style)
+            r'NULL\s*!=\s*\w+',              # NULL != p
+        ]
+        
+        # Bounds checks: n > max, n >= max, n < 0, idx >= len
+        bounds_patterns = [
+            r'\w+\s*>\s*\w+',                # n > max
+            r'\w+\s*>=\s*\w+',               # n >= max
+            r'\w+\s*<\s*\w+',                # n < max
+            r'\w+\s*<=\s*\w+',               # n <= max
+            r'\w+\s*<\s*0\b',                # n < 0
+            r'\w+\s*>=\s*0\b',               # n >= 0
+        ]
+        
+        all_patterns = null_patterns + bounds_patterns
+        
+        for pattern in all_patterns:
+            if re.search(pattern, condition):
+                return True
+        
+        return False
+    
+    def _strip_string_literals(self, line_text: str) -> str:
+        """Remove string literals from line to avoid counting braces inside strings.
+        
+        Handles: "string with { braces }" and 'char literals'
+        """
+        # Remove string literals (handles escaped quotes)
+        result = re.sub(r'"(?:[^"\\]|\\.)*"', '""', line_text)
+        # Remove char literals
+        result = re.sub(r"'(?:[^'\\]|\\.)*'", "''", result)
+        return result
+    
+    def _count_braces(self, line_text: str) -> int:
+        """Count net braces (open - close) excluding those in string literals."""
+        stripped = self._strip_string_literals(line_text)
+        return stripped.count('{') - stripped.count('}')
+    
+    def _extract_guard_body_lines(self, code_lines: List[str], predicate_line: int) -> Set[int]:
+        """From an if-line, find the consequence lines (early-exit actions).
+        
+        Handles:
+        - Single-line: if (!p) return;
+        - Braced blocks: if (!p) { ... }
+        - Unbraced single statement: if (!p)\n    return;
+        
+        Returns set of line numbers (1-indexed).
+        """
+        result: Set[int] = set()
+        if predicate_line < 1 or predicate_line > len(code_lines):
+            return result
+        
+        line_text = code_lines[predicate_line - 1]
+        
+        # Check for single-line form: if (!p) return;
+        # Look for statement after the closing paren
+        after_paren = re.search(r'\)\s*(.+?)\s*;?\s*$', line_text)
+        if after_paren:
+            rest = after_paren.group(1).strip()
+            if rest and not rest.startswith('{') and rest != '{':
+                # Single-line form
+                result.add(predicate_line)
+                return result
+        
+        # Check for brace on same line or next line (strip string literals first)
+        stripped_line = self._strip_string_literals(line_text)
+        has_open_brace = '{' in stripped_line
+        
+        if has_open_brace:
+            # Find matching close brace (using _count_braces to handle string literals)
+            brace_count = self._count_braces(line_text)
+            max_search = self.config.guard_body_max_lines
+            for i in range(predicate_line, min(len(code_lines), predicate_line + max_search)):
+                if i > predicate_line:
+                    brace_count += self._count_braces(code_lines[i - 1])
+                if brace_count <= 0:
+                    # Include lines from predicate+1 to i
+                    for ln in range(predicate_line + 1, i + 1):
+                        result.add(ln)
+                    break
+                elif i > predicate_line:
+                    result.add(i)
+        else:
+            # Unbraced - next non-empty line is the body
+            for i in range(predicate_line + 1, min(len(code_lines) + 1, predicate_line + 5)):
+                if i <= len(code_lines) and code_lines[i - 1].strip():
+                    result.add(i)
+                    break
+        
+        return result
+    
+    def _is_early_exit_line(self, line_text: str) -> bool:
+        """True if line contains early-exit statement."""
+        stripped = line_text.strip()
+        early_exit_patterns = [
+            r'\breturn\b',
+            r'\bgoto\b',
+            r'\bbreak\b',
+            r'\bcontinue\b',
+            r'\bexit\s*\(',
+            r'\babort\s*\(',
+        ]
+        for pattern in early_exit_patterns:
+            if re.search(pattern, stripped):
+                return True
+        return False
+    
+    def _find_guard_lines_for_criteria(self, code: str, criterion_lines: List[int],
+                                        pdg: Optional[PDG] = None) -> Tuple[Set[int], Set[int]]:
+        """Find guard lines (null/bounds checks) that protect criterion lines.
+        
+        For each criterion line:
+        - Extract variables used in that line
+        - Scan backward up to guard_scan_max_lines
+        - Find if-statements that check those variables AND have early-exit consequence
+        
+        Returns: (guard_lines, guard_defense_lines)
+            guard_lines: the if-predicate lines
+            guard_defense_lines: the return/goto/break lines inside guards
+        """
+        guard_lines: Set[int] = set()
+        guard_defense_lines: Set[int] = set()
+        
+        code_lines = code.split('\n')
+        max_line = len(code_lines)
+        
+        for crit_line in criterion_lines:
+            if crit_line < 1 or crit_line > max_line:
+                continue
+            
+            # Extract variables from criterion line
+            crit_text = code_lines[crit_line - 1]
+            vars_of_interest = self._extract_vars_from_line(crit_text)
+            
+            if not vars_of_interest:
+                continue
+            
+            # Scan backward for guards
+            scan_start = max(1, crit_line - self.config.guard_scan_max_lines)
+            
+            for line_num in range(crit_line - 1, scan_start - 1, -1):
+                line_text = code_lines[line_num - 1]
+                
+                if self._is_guard_predicate(line_text, vars_of_interest):
+                    # Check if the body has early exit
+                    body_lines = self._extract_guard_body_lines(code_lines, line_num)
+                    
+                    has_early_exit = False
+                    for body_ln in body_lines:
+                        if body_ln <= max_line and self._is_early_exit_line(code_lines[body_ln - 1]):
+                            has_early_exit = True
+                            guard_defense_lines.add(body_ln)
+                    
+                    # Also check if predicate line itself has early exit (single-line form)
+                    if self._is_early_exit_line(line_text):
+                        has_early_exit = True
+                    
+                    if has_early_exit:
+                        guard_lines.add(line_num)
+                        guard_defense_lines.update(body_lines)
+        
+        return guard_lines, guard_defense_lines
+    
     def _expand_slice_for_quality(self, code: str, included_lines: Set[int], 
                                    criterion_lines: List[int]) -> Set[int]:
         """Expand slice if it doesn't meet quality requirements."""
@@ -306,8 +806,9 @@ class PDGSlicer:
         expanded = set(included_lines)
         
         if self.config.preserve_defense_statements:
-            defense_lines = self._find_defense_lines(code)
-            for dl in defense_lines:
+            # Only include defense lines near criterion (not all defense lines)
+            nearby_defense = self._find_defense_lines_near(code, criterion_lines, radius=8)
+            for dl in nearby_defense:
                 if len(expanded) < self.config.max_lines:
                     expanded.add(dl)
         
@@ -466,13 +967,18 @@ class PDGSlicer:
         # Combine lines
         all_lines = data_lines | control_lines | set(criterion_lines)
         
-        # Add defense lines if configured
-        if self.config.preserve_defense_statements:
-            defense_lines = self._find_defense_lines(code)
-            all_lines.update(defense_lines)
+        # Find guards for criterion variables
+        guard_lines, guard_defense_lines = self._find_guard_lines_for_criteria(code, criterion_lines, pdg)
+        all_lines.update(guard_lines)
+        all_lines.update(guard_defense_lines)
         
-        # Apply limits
-        limited_lines = self._apply_limits(code, all_lines, criterion_lines)
+        # Add defense lines if configured - only near criterion, not all
+        if self.config.preserve_defense_statements:
+            nearby_defense = self._find_defense_lines_near(code, criterion_lines, radius=10)
+            all_lines.update(nearby_defense)
+        
+        # Apply limits with guard priority
+        limited_lines = self._apply_limits(code, all_lines, criterion_lines, guard_lines)
         
         # Expand if quality check fails
         limited_lines = self._expand_slice_for_quality(code, limited_lines, criterion_lines)
@@ -506,12 +1012,17 @@ class PDGSlicer:
         
         all_lines = data_lines | control_lines | set(criterion_lines)
         
-        # Add defense lines if configured
-        if self.config.preserve_defense_statements:
-            defense_lines = self._find_defense_lines(code)
-            all_lines.update(defense_lines)
+        # Find guards for criterion variables
+        guard_lines, guard_defense_lines = self._find_guard_lines_for_criteria(code, criterion_lines, pdg)
+        all_lines.update(guard_lines)
+        all_lines.update(guard_defense_lines)
         
-        limited_lines = self._apply_limits(code, all_lines, criterion_lines)
+        # Add defense lines if configured - only near criterion, not all
+        if self.config.preserve_defense_statements:
+            nearby_defense = self._find_defense_lines_near(code, criterion_lines, radius=10)
+            all_lines.update(nearby_defense)
+        
+        limited_lines = self._apply_limits(code, all_lines, criterion_lines, guard_lines)
         
         # Expand if quality check fails
         limited_lines = self._expand_slice_for_quality(code, limited_lines, criterion_lines)
@@ -568,12 +1079,17 @@ class PDGSlicer:
         all_control = backward_control
         all_lines = all_data | all_control | set(criterion_lines)
         
-        # Add defense lines if configured
-        if self.config.preserve_defense_statements:
-            defense_lines = self._find_defense_lines(code)
-            all_lines.update(defense_lines)
+        # Find guards for criterion variables
+        guard_lines, guard_defense_lines = self._find_guard_lines_for_criteria(code, criterion_lines, pdg)
+        all_lines.update(guard_lines)
+        all_lines.update(guard_defense_lines)
         
-        limited_lines = self._apply_limits(code, all_lines, criterion_lines)
+        # Add defense lines if configured - only near criterion, not all
+        if self.config.preserve_defense_statements:
+            nearby_defense = self._find_defense_lines_near(code, criterion_lines, radius=10)
+            all_lines.update(nearby_defense)
+        
+        limited_lines = self._apply_limits(code, all_lines, criterion_lines, guard_lines)
         
         # Expand if quality check fails
         limited_lines = self._expand_slice_for_quality(code, limited_lines, criterion_lines)
@@ -605,27 +1121,40 @@ class PDGSlicer:
         )
     
     def _apply_limits(self, code: str, lines: Set[int],
-                      criterion_lines: List[int]) -> Set[int]:
-        """Apply max_lines and max_tokens limits."""
+                      criterion_lines: List[int],
+                      guard_lines: Optional[Set[int]] = None) -> Set[int]:
+        """Apply max_lines and max_tokens limits.
+        
+        Priority order for keeping lines when budget is tight:
+        1. Criterion lines (always kept)
+        2. Guard lines (security-critical checks)
+        3. Other lines (by distance from criterion)
+        """
         if not lines:
             return lines
         
         code_lines = code.split('\n')
         criterion_set = set(criterion_lines)
+        guard_set = guard_lines or set()
         
-        # Sort by distance from nearest criterion
-        def distance_from_criterion(line: int) -> int:
-            if not criterion_lines:
-                return 0
-            return min(abs(line - c) for c in criterion_lines)
+        # Sort by priority: criterion (0) > guard (1) > other (2), then by distance
+        def line_priority(line: int) -> Tuple[int, int]:
+            if line in criterion_set:
+                priority = 0
+            elif line in guard_set:
+                priority = 1
+            else:
+                priority = 2
+            distance = min(abs(line - c) for c in criterion_lines) if criterion_lines else 0
+            return (priority, distance)
         
-        sorted_lines = sorted(lines, key=distance_from_criterion)
+        sorted_lines = sorted(lines, key=line_priority)
         
         # Greedy add lines respecting both max_lines and max_tokens
         result: Set[int] = set()
         total_tokens = 0
         
-        # Always include criterion lines first
+        # Always include criterion lines first (priority 0)
         for line in sorted_lines:
             if line in criterion_set and 1 <= line <= len(code_lines):
                 line_text = code_lines[line - 1]
@@ -633,7 +1162,23 @@ class PDGSlicer:
                 result.add(line)
                 total_tokens += line_tokens
         
-        # Add remaining lines by distance
+        # Add guard lines next (priority 1), respecting token budget
+        for line in sorted_lines:
+            if line in result or line not in guard_set:
+                continue
+            if len(result) >= self.config.max_lines:
+                break
+            if 1 <= line <= len(code_lines):
+                line_text = code_lines[line - 1]
+                line_tokens = len(line_text.split())
+                
+                if total_tokens + line_tokens > self.config.max_tokens:
+                    continue
+                
+                result.add(line)
+                total_tokens += line_tokens
+        
+        # Add remaining lines by distance (priority 2)
         for line in sorted_lines:
             if line in result:
                 continue

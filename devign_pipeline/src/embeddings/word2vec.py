@@ -356,10 +356,10 @@ def print_similar_words(
         model: Trained gensim Word2Vec model
         test_words: List of words to find similar words for. If None, uses defaults.
         topn: Number of similar words to show
-        include_semantic_buckets: Whether to also test semantic bucket tokens (BUF_0, LEN_0, etc.)
+        include_semantic_buckets: Whether to also test common code tokens (buf, strlen, sizeof, etc.)
     """
     default_words = ['malloc', 'free', 'memcpy', 'NULL', 'buffer', 'size', 'len', 'ptr']
-    semantic_bucket_words = ['BUF_0', 'LEN_0', 'PTR_0', 'IDX_0', 'ERR_0']
+    semantic_bucket_words = ['buf', 'strlen', 'sizeof', 'data', 'ret', 'err', 'ctx', 's']
     
     words_to_test = test_words if test_words is not None else default_words
     if include_semantic_buckets:

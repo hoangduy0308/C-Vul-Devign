@@ -57,6 +57,8 @@ from src.training.config_simplified import (
     get_precision_focused_config,
     get_large_config,
     get_focal_config,
+    get_improved_config,
+    get_conservative_config,
     get_seeds_for_evaluation,
 )
 from src.training.train_simplified import (
@@ -435,6 +437,89 @@ class ImprovedHybridBiGRUVulnDetector(nn.Module):
         
         logits = self.classifier(combined)
         return logits
+
+
+class TemperatureScaling(nn.Module):
+    """
+    Temperature scaling for probability calibration.
+    
+    Oracle recommendation: Post-hoc calibration helps raise precision 
+    at same recall when logits are overconfident.
+    
+    Usage:
+        1. Train model normally
+        2. Fit temperature on validation set
+        3. Apply temperature scaling during inference
+    """
+    
+    def __init__(self):
+        super().__init__()
+        self.temperature = nn.Parameter(torch.ones(1))
+    
+    def forward(self, logits: torch.Tensor) -> torch.Tensor:
+        """Apply temperature scaling to logits."""
+        return logits / self.temperature
+    
+    def fit(
+        self, 
+        model: nn.Module, 
+        val_loader: DataLoader, 
+        config: BaselineConfig,
+        device: torch.device,
+        max_iter: int = 50
+    ):
+        """
+        Fit temperature parameter on validation set using NLL loss.
+        
+        Args:
+            model: Trained model
+            val_loader: Validation DataLoader
+            config: Training config
+            device: Device to use
+            max_iter: Maximum optimization iterations
+        """
+        model.eval()
+        
+        all_logits = []
+        all_labels = []
+        
+        with torch.no_grad():
+            for batch in val_loader:
+                input_ids = batch['input_ids'].to(device)
+                attention_mask = batch['attention_mask'].to(device)
+                labels = batch['labels'].to(device)
+                vuln_features = batch.get('vuln_features')
+                lengths = batch['lengths'].to(device)
+                extended_token_type_ids = batch.get('extended_token_type_ids')
+                
+                if vuln_features is not None:
+                    vuln_features = vuln_features.to(device)
+                if extended_token_type_ids is not None:
+                    extended_token_type_ids = extended_token_type_ids.to(device)
+                
+                logits = model(input_ids, attention_mask, vuln_features, lengths, 
+                              extended_token_type_ids=extended_token_type_ids)
+                
+                all_logits.append(logits)
+                all_labels.append(labels)
+        
+        all_logits = torch.cat(all_logits, dim=0)
+        all_labels = torch.cat(all_labels, dim=0)
+        
+        nll_criterion = nn.CrossEntropyLoss()
+        optimizer = optim.LBFGS([self.temperature], lr=0.01, max_iter=max_iter)
+        
+        def eval_fn():
+            optimizer.zero_grad()
+            scaled_logits = self.forward(all_logits)
+            loss = nll_criterion(scaled_logits, all_labels)
+            loss.backward()
+            return loss
+        
+        optimizer.step(eval_fn)
+        
+        print(f"  Temperature scaling: T = {self.temperature.item():.4f}")
+        return self.temperature.item()
 
 
 def load_pretrained_embedding(config: BaselineConfig, data_dir: str) -> Optional[np.ndarray]:
@@ -896,7 +981,9 @@ def evaluate(
     criterion: nn.Module,
     config: BaselineConfig,
     device: torch.device,
-    return_threshold_analysis: bool = False
+    return_threshold_analysis: bool = False,
+    use_fixed_threshold: bool = False,
+    temperature: float = 1.0,
 ) -> Dict[str, Any]:
     """Evaluate model with optimal threshold search.
     
@@ -907,6 +994,8 @@ def evaluate(
         config: Configuration with threshold settings
         device: Device to use
         return_threshold_analysis: If True, include threshold analysis results
+        use_fixed_threshold: If True, use fixed 0.5 threshold (Oracle: reduces noise during training)
+        temperature: Temperature for probability calibration (default 1.0 = no scaling)
     
     Returns:
         Dict with metrics, optionally including threshold analysis
@@ -948,21 +1037,36 @@ def evaluate(
     all_probs = np.array(all_probs)
     all_labels = np.array(all_labels)
     
+    # Apply temperature scaling if provided
+    if temperature != 1.0:
+        # Convert to logits, scale, convert back to probs
+        # probs = sigmoid(logits) -> logits = logit(probs)
+        eps = 1e-7
+        logits = np.log(all_probs + eps) - np.log(1 - all_probs + eps)
+        scaled_logits = logits / temperature
+        all_probs = 1 / (1 + np.exp(-scaled_logits))
+    
     try:
         auc = roc_auc_score(all_labels, all_probs)
     except ValueError:
         # Happens when only one class is present in batch
         auc = 0.5
     
-    optimization_metric = getattr(config, 'threshold_optimization_metric', 'f1')
-    
-    best_t, best_score, threshold_results = find_optimal_threshold(
-        all_labels, all_probs,
-        metric=optimization_metric,
-        min_t=config.threshold_min,
-        max_t=config.threshold_max,
-        step=config.threshold_step
-    )
+    # Oracle: Use fixed threshold during training to avoid noise
+    if use_fixed_threshold:
+        best_t = 0.5
+        best_score = None
+        threshold_results = None
+    else:
+        optimization_metric = getattr(config, 'threshold_optimization_metric', 'f1')
+        
+        best_t, best_score, threshold_results = find_optimal_threshold(
+            all_labels, all_probs,
+            metric=optimization_metric,
+            min_t=config.threshold_min,
+            max_t=config.threshold_max,
+            step=config.threshold_step
+        )
     
     preds_optimal = (all_probs >= best_t).astype(int)
     
@@ -1248,10 +1352,26 @@ def train_single_seed(
         optimizer = optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     
     # Scheduler
+    use_warmup = getattr(config, 'use_warmup', False)
+    warmup_epochs = getattr(config, 'warmup_epochs', 2)
+    
     if config.scheduler_type == 'cosine':
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=config.max_epochs, eta_min=config.scheduler_min_lr
-        )
+        if use_warmup:
+            # Cosine with warmup
+            from torch.optim.lr_scheduler import LambdaLR
+            
+            def warmup_cosine_schedule(epoch):
+                if epoch < warmup_epochs:
+                    return (epoch + 1) / warmup_epochs
+                else:
+                    progress = (epoch - warmup_epochs) / (config.max_epochs - warmup_epochs)
+                    return 0.5 * (1 + np.cos(np.pi * progress))
+            
+            scheduler = LambdaLR(optimizer, lr_lambda=warmup_cosine_schedule)
+        else:
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=config.max_epochs, eta_min=config.scheduler_min_lr
+            )
     else:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode='max', factor=config.scheduler_factor,
@@ -1290,8 +1410,10 @@ def train_single_seed(
         train_metrics = train_epoch(model, train_loader, optimizer, criterion, scaler, config, DEVICE, 
                                     compute_accurate_metrics=compute_accurate)
         
-        # Validate
-        val_metrics = evaluate(model, val_loader, criterion, config, DEVICE)
+        # Validate - Oracle: Use fixed threshold during training to reduce noise
+        use_fixed = getattr(config, 'report_fixed_threshold_during_training', True)
+        val_metrics = evaluate(model, val_loader, criterion, config, DEVICE, 
+                              use_fixed_threshold=use_fixed)
         
         epoch_time = time.time() - epoch_start
         
@@ -1303,9 +1425,12 @@ def train_single_seed(
         history['val_f1'].append(val_metrics['f1'])
         history['val_auc'].append(val_metrics['auc'])
         
+        # Get current LR for logging
+        current_lr = optimizer.param_groups[0]['lr']
+        
         if verbose:
             print(
-                f"  Ep {epoch:2d}/{config.max_epochs} ({epoch_time:.0f}s) | "
+                f"  Ep {epoch:2d}/{config.max_epochs} ({epoch_time:.0f}s) LR={current_lr:.2e} | "
                 f"Train: L={train_metrics['loss']:.3f} F1={train_metrics['f1']:.3f} | "
                 f"Val: F1={val_metrics['f1']:.3f} AUC={val_metrics['auc']:.3f} T={val_metrics['threshold']:.2f}"
             )
@@ -1351,13 +1476,26 @@ def train_single_seed(
         base_model.load_state_dict(best_state)
         final_model = model
     
+    # Temperature scaling - Oracle: Post-hoc calibration helps precision
+    temperature = 1.0
+    if getattr(config, 'use_temperature_scaling', False):
+        if verbose:
+            print("  Fitting temperature scaling...")
+        temp_scaler = TemperatureScaling().to(DEVICE)
+        final_base = final_model.module if hasattr(final_model, 'module') else final_model
+        temperature = temp_scaler.fit(final_base, val_loader, config, DEVICE)
+    
+    # Re-evaluate with optimal threshold (not fixed) after training
+    final_metrics = evaluate(final_model, val_loader, criterion, config, DEVICE, 
+                            use_fixed_threshold=False, temperature=temperature)
+    
     eval_metrics = EvalMetrics(
-        f1=best_metrics['f1'],
-        precision=best_metrics['precision'],
-        recall=best_metrics['recall'],
-        auc=best_metrics['auc'],
-        accuracy=accuracy_score(best_metrics['labels'], (best_metrics['probs'] >= best_metrics['threshold']).astype(int)),
-        threshold=best_metrics['threshold'],
+        f1=final_metrics['f1'],
+        precision=final_metrics['precision'],
+        recall=final_metrics['recall'],
+        auc=final_metrics['auc'],
+        accuracy=accuracy_score(final_metrics['labels'], (final_metrics['probs'] >= final_metrics['threshold']).astype(int)),
+        threshold=final_metrics['threshold'],
     )
     
     # Plot training history
@@ -1469,7 +1607,8 @@ def main(
     Main training function.
     
     Args:
-        config_name: One of "baseline", "recall_focused", "precision_focused", "large"
+        config_name: One of "baseline", "improved", "conservative", "recall_focused", 
+                     "precision_focused", "large", "focal"
         n_seeds: Number of seeds for multi-seed evaluation
         data_dir: Path to preprocessed data
     """
@@ -1479,6 +1618,8 @@ def main(
     # Get config
     config_getters = {
         "baseline": get_baseline_config,
+        "improved": get_improved_config,
+        "conservative": get_conservative_config,
         "recall_focused": get_recall_focused_config,
         "precision_focused": get_precision_focused_config,
         "large": get_large_config,
@@ -1503,7 +1644,12 @@ def main(
     print(f"  hidden_dim: {config.hidden_dim}")
     print(f"  num_layers: {config.num_layers}")
     print(f"  loss_type: {config.loss_type}")
-    print(f"  use_swa: {config.use_swa}")
+    print(f"  weight_decay: {config.weight_decay}")
+    print(f"  scheduler: {config.scheduler_type} (warmup={getattr(config, 'use_warmup', False)})")
+    print(f"  use_swa: {config.use_swa} (start={config.swa_start_epoch})")
+    print(f"  use_token_augmentation: {config.use_token_augmentation}")
+    print(f"  use_temperature_scaling: {getattr(config, 'use_temperature_scaling', False)}")
+    print(f"  vuln_feature_dropout: {config.vuln_feature_dropout}")
     print(f"  n_seeds: {n_seeds}")
     print(f"{'='*60}\n")
     
@@ -1624,9 +1770,11 @@ def main(
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="Devign Training V2")
+    parser = argparse.ArgumentParser(description="Devign Training V2 - With Oracle Improvements")
     parser.add_argument("--config", type=str, default="baseline",
-                        choices=["baseline", "recall_focused", "precision_focused", "large", "focal"])
+                        choices=["baseline", "improved", "conservative", "recall_focused", 
+                                "precision_focused", "large", "focal"],
+                        help="Config preset to use (default: baseline with all Oracle fixes)")
     parser.add_argument("--seeds", type=int, default=3)
     parser.add_argument("--data-dir", type=str, default=None)
     
@@ -1640,5 +1788,5 @@ if __name__ == "__main__":
 
 # %%
 # Quick run for notebook:
-# Uncomment the line below to run training
+# Uncomment the line below to run training with Oracle-recommended improvements
 # main(config_name="baseline", n_seeds=3)

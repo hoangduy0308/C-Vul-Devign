@@ -43,7 +43,7 @@ class VectorizationStrategy(ABC):
         self,
         tokens: List[str],
         vocab: Dict[str, int]
-    ) -> Tuple[List[int], List[int], List[int]]:
+    ) -> Tuple[List[int], List[int], List[int], List[str]]:
         """
         Vectorize a single token sequence.
         
@@ -52,7 +52,8 @@ class VectorizationStrategy(ABC):
             vocab: Token to ID mapping
             
         Returns:
-            Tuple of (input_ids, attention_mask, unk_positions)
+            Tuple of (input_ids, attention_mask, unk_positions, unk_tokens)
+            where unk_tokens contains the actual token strings that were mapped to UNK.
         """
         pass
     
@@ -104,9 +105,13 @@ class VectorizationStrategy(ABC):
             if len(tokens) > self.config.max_len:
                 truncated_count += 1
             
-            input_ids, attention_mask, unk_positions = self.vectorize_single(
-                tokens, vocab
-            )
+            result = self.vectorize_single(tokens, vocab)
+            # Handle both old 3-tuple and new 4-tuple return formats
+            if len(result) == 4:
+                input_ids, attention_mask, unk_positions, unk_token_strs = result
+            else:
+                input_ids, attention_mask, unk_positions = result
+                unk_token_strs = []
             
             all_input_ids.append(input_ids)
             all_attention_masks.append(attention_mask)
@@ -116,9 +121,9 @@ class VectorizationStrategy(ABC):
             total_tokens += actual_len
             total_unks += len(unk_positions)
             
-            for pos in unk_positions:
-                if pos < len(tokens):
-                    unk_tokens[tokens[pos]] += 1
+            # Use the actual UNK token strings directly
+            for tok in unk_token_strs:
+                unk_tokens[tok] += 1
         
         stats = {
             'total_tokens': total_tokens,
@@ -176,8 +181,13 @@ class HeadTailVectorizationStrategy(VectorizationStrategy):
         self,
         tokens: List[str],
         vocab: Dict[str, int]
-    ) -> Tuple[List[int], List[int], List[int]]:
-        """Vectorize with UNK position tracking."""
+    ) -> Tuple[List[int], List[int], List[int], List[str]]:
+        """Vectorize with UNK position tracking.
+        
+        Returns:
+            Tuple of (input_ids, attention_mask, unk_positions, unk_tokens)
+            where unk_tokens contains the actual token strings that were mapped to UNK.
+        """
         unk_id = vocab.get('UNK', 1)
         pad_id = vocab.get('PAD', 0)
         max_len = self.config.max_len
@@ -186,6 +196,7 @@ class HeadTailVectorizationStrategy(VectorizationStrategy):
         
         input_ids = []
         unk_positions = []
+        unk_tokens = []  # Track actual UNK token strings
         
         for i, tok in enumerate(truncated):
             if tok in vocab:
@@ -193,6 +204,7 @@ class HeadTailVectorizationStrategy(VectorizationStrategy):
             else:
                 input_ids.append(unk_id)
                 unk_positions.append(i)
+                unk_tokens.append(tok)  # Store the actual token
         
         actual_len = len(input_ids)
         if actual_len < max_len:
@@ -200,7 +212,7 @@ class HeadTailVectorizationStrategy(VectorizationStrategy):
         
         attention_mask = [1] * actual_len + [0] * (max_len - actual_len)
         
-        return input_ids, attention_mask, unk_positions
+        return input_ids, attention_mask, unk_positions, unk_tokens
 
 
 class SimpleVectorizationStrategy(VectorizationStrategy):
@@ -213,13 +225,14 @@ class SimpleVectorizationStrategy(VectorizationStrategy):
         self,
         tokens: List[str],
         vocab: Dict[str, int]
-    ) -> Tuple[List[int], List[int], List[int]]:
+    ) -> Tuple[List[int], List[int], List[int], List[str]]:
         """Vectorize with simple tail truncation."""
         unk_id = vocab.get('UNK', 1)
         pad_id = vocab.get('PAD', 0)
         max_len = self.config.max_len
         
-        input_ids = [vocab.get(tok, unk_id) for tok in tokens[:max_len]]
+        truncated = tokens[:max_len]
+        input_ids = [vocab.get(tok, unk_id) for tok in truncated]
         actual_len = len(input_ids)
         
         if actual_len < max_len:
@@ -227,13 +240,15 @@ class SimpleVectorizationStrategy(VectorizationStrategy):
         
         attention_mask = [1] * actual_len + [0] * (max_len - actual_len)
         
-        # Track UNK positions for consistency
-        unk_positions = [
-            i for i, tok in enumerate(tokens[:max_len])
-            if tok not in vocab
-        ]
+        # Track UNK positions and tokens
+        unk_positions = []
+        unk_tokens = []
+        for i, tok in enumerate(truncated):
+            if tok not in vocab:
+                unk_positions.append(i)
+                unk_tokens.append(tok)
         
-        return input_ids, attention_mask, unk_positions
+        return input_ids, attention_mask, unk_positions, unk_tokens
 
 
 def get_vectorization_strategy(

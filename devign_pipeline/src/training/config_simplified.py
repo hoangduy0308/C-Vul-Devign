@@ -47,8 +47,11 @@ class BaselineConfig:
     rnn_dropout: float = 0.25
     classifier_dropout: float = 0.25
     
-    # Weight decay
-    weight_decay: float = 1e-4
+    # Weight decay - Oracle recommends 1e-3 to 1e-2 for better generalization
+    # NOTE: 1e-3 is higher than typical 1e-4, but Devign dataset is nearly balanced (45.8%/54.2%)
+    # and we use bce_weighted loss with pos_weight to handle any class imbalance.
+    # If underfitting occurs on minority class, reduce to 5e-4.
+    weight_decay: float = 1e-3
     
     # ============= LOSS FUNCTION =============
     # Oracle: Use SINGLE loss strategy - don't stack multiple
@@ -85,20 +88,24 @@ class BaselineConfig:
     patience: int = 5
     min_delta: float = 1e-4
     
-    # Scheduler
-    scheduler_type: str = "plateau"  # Options: "plateau", "cosine"
+    # Scheduler - Oracle: cosine decay is less reactive/noisy on small val sets
+    scheduler_type: str = "cosine"  # Options: "plateau", "cosine"
     scheduler_patience: int = 2
     scheduler_factor: float = 0.5
     scheduler_min_lr: float = 1e-6
+    
+    # Learning rate warmup - Oracle: helps training stability
+    use_warmup: bool = True
+    warmup_epochs: int = 2  # ~5-10% of training
     
     # Mixed precision
     use_amp: bool = True
     
     # ============= SWA =============
     # Oracle: SWA alone can replace part of ensemble
-    # Disabled: Early stopping triggers at epoch 9-12, but SWA starts at epoch 15
-    use_swa: bool = False
-    swa_start_epoch: int = 15
+    # Start SWA at epoch 8-10 where best performance typically occurs
+    use_swa: bool = True
+    swa_start_epoch: int = 8
     swa_lr: float = 5e-5
     
     # ============= ENSEMBLE =============
@@ -118,28 +125,36 @@ class BaselineConfig:
     embedding_lr_scale: float = 0.1
     
     # ============= THRESHOLD =============
+    # Oracle: Report F1 at fixed threshold (0.5) during training, optimize once at end
     use_optimal_threshold: bool = True
     threshold_min: float = 0.2
     threshold_max: float = 0.7
     threshold_step: float = 0.01
-    threshold_optimization_metric: str = 'mcc'  # 'f1', 'precision', 'recall', 'balanced', 'mcc', 'youden'
+    threshold_optimization_metric: str = 'f1'  # Oracle: Optimize for F1 if you care about F1 (not MCC)
+    report_fixed_threshold_during_training: bool = True  # Report metrics at 0.5 during training to avoid noise
     
     # ============= VULN FEATURES (optional) =============
     use_vuln_features: bool = True  # Enabled: handcrafted features help when tokens lack discriminative power
     vuln_feature_dim: int = 25
     vuln_feature_hidden_dim: int = 64
-    vuln_feature_dropout: float = 0.2
+    vuln_feature_dropout: float = 0.4  # Oracle: Increase to 0.3-0.5 to prevent feature overfitting
     
     # ============= TOKEN AUGMENTATION =============
-    use_token_augmentation: bool = False  # OFF by default
-    token_dropout_prob: float = 0.05
-    token_mask_prob: float = 0.03
+    # Oracle: Token augmentation is one of best regularizers for code models
+    # NOTE: If training loss converges too slowly, reduce token_dropout_prob to 0.05-0.08
+    use_token_augmentation: bool = True
+    token_dropout_prob: float = 0.08   # Conservative start; increase to 0.10-0.15 if overfitting persists
+    token_mask_prob: float = 0.05      # Oracle: 0.05-0.1
     mask_token_id: int = 1
     
     # ============= TOKEN TYPE EMBEDDING =============
     use_token_type_embedding: bool = True  # Enable vulnerability-relevant token type embedding
     num_token_types: int = 16              # Number of extended token types (from token_types.py)
     token_type_embed_dim: int = 32         # Smaller than main embed_dim for efficiency
+    
+    # ============= CALIBRATION =============
+    # Oracle: Temperature scaling helps raise precision at same recall
+    use_temperature_scaling: bool = True  # Post-hoc calibration on val set
     
     # ============= CHECKPOINTING =============
     save_every: int = 5
@@ -256,6 +271,49 @@ def get_focal_config() -> BaselineConfig:
         threshold_optimization_metric='mcc',
         threshold_min=0.30,
         threshold_max=0.70,
+    )
+
+
+def get_improved_config() -> BaselineConfig:
+    """
+    Improved config with all Oracle recommendations applied.
+    
+    Key changes from baseline:
+    - weight_decay: 1e-4 -> 1e-3 (stronger regularization)
+    - vuln_feature_dropout: 0.2 -> 0.4 (prevent feature overfitting)
+    - use_swa: False -> True at epoch 8 (stabilize late training)
+    - use_token_augmentation: False -> True (best regularizer for code)
+    - scheduler: plateau -> cosine (less noisy)
+    - use_warmup: True (training stability)
+    - threshold_optimization_metric: mcc -> f1 (optimize what you care about)
+    - use_temperature_scaling: True (better calibration)
+    
+    Expected improvements:
+    - Reduced overfitting (smaller train-val gap)
+    - More stable training (no F1 collapse)
+    - Better precision without sacrificing recall
+    """
+    return BaselineConfig()  # All Oracle fixes are now in BaselineConfig defaults
+
+
+def get_conservative_config() -> BaselineConfig:
+    """
+    Conservative config - less aggressive changes.
+    
+    Use this if the improved baseline is too aggressive.
+    """
+    return BaselineConfig().override(
+        # Slightly less aggressive regularization
+        weight_decay=5e-4,
+        vuln_feature_dropout=0.3,
+        
+        # Token augmentation but gentler
+        token_dropout_prob=0.05,
+        token_mask_prob=0.03,
+        
+        # Keep plateau scheduler (more familiar)
+        scheduler_type="plateau",
+        use_warmup=False,
     )
 
 

@@ -9,6 +9,7 @@ Features:
 """
 
 import re
+import logging
 from typing import List, Dict, Tuple, Set, Optional
 from collections import Counter
 from tqdm import tqdm
@@ -18,6 +19,8 @@ from .hybrid_tokenizer import (
     SPECIAL_TOKENS, TOKEN_REGEX,
     is_defense_function
 )
+
+logger = logging.getLogger(__name__)
 
 
 # Numbers to preserve (from preserve_tokenizer)
@@ -51,10 +54,15 @@ NUMERIC_TOKENS = {'NEG_1', 'NUM', 'NUM_HEX', 'NUM_OCT', 'FLOAT',
 DEFAULT_CONFIG = {
     'preserve_dangerous_apis': True,
     'preserve_defense_apis': True,
+    'preserve_function_names': True,  # Keep all function names intact
+    'preserve_identifiers': True,     # Keep all identifiers intact (variables, types, etc.)
     'preserve_keywords': True,
     'identifier_case': 'lower',  # 'lower', 'preserve', 'smart'
     'digits_policy': 'keep_alnum',  # 'keep_alnum', 'split_alpha_digit'
     'max_subtokens_per_identifier': 8,
+    # Hybrid identifier strategy: preserve high-freq identifiers, split rare ones
+    'hybrid_identifier_mode': True,   # Enable hybrid mode (requires vocab frequency info)
+    'hybrid_min_freq_threshold': 5,   # Identifiers with freq >= this are preserved whole
     'numeric_policy': {
         'keep_small_integers': True,
         'keep_negative_one': True,
@@ -83,12 +91,18 @@ class HybridSubtokenTokenizer:
     security-critical APIs and applying semantic mapping to literals.
     """
     
-    def __init__(self, config: Dict = None):
+    def __init__(self, config: Dict = None, token_freq: Dict[str, int] = None):
         self.config = {**DEFAULT_CONFIG, **(config or {})}
         self.numeric_policy = self.config.get('numeric_policy', {})
         self.string_policy = self.config.get('string_policy', {})
         self.macro_prefixes = self.config.get('macro_prefixes', ())
         self.regex = TOKEN_REGEX
+        
+        # Token frequency map for hybrid identifier mode
+        # When provided, high-frequency identifiers are preserved, rare ones are split
+        self.token_freq = token_freq or {}
+        self.hybrid_mode = self.config.get('hybrid_identifier_mode', True) and bool(self.token_freq)
+        self.hybrid_min_freq = self.config.get('hybrid_min_freq_threshold', 5)
         
         # Precompile camelCase split pattern
         self._camel_pattern = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
@@ -251,11 +265,50 @@ class HybridSubtokenTokenizer:
         if is_function_call and is_defense_function(value):
             return [value], 'API_DEFENSE'
         
+        # NEW: Preserve ALL function names (not just dangerous/defense)
+        if self.config.get('preserve_function_names', True) and is_function_call:
+            # Apply case policy to function name
+            case_policy = self.config.get('identifier_case', 'lower')
+            if case_policy == 'lower':
+                return [value.lower()], 'FUNCTION'
+            return [value], 'FUNCTION'
+        
         # Check if ALL_CAPS macro (preserve as single token)
         if self._is_macro(value):
             return [value], 'MACRO'
         
-        # Split identifier into subtokens
+        # Apply case policy
+        case_policy = self.config.get('identifier_case', 'lower')
+        normalized_value = value.lower() if case_policy == 'lower' else value
+        
+        # Hybrid identifier strategy: check frequency before deciding to preserve or split
+        if self.config.get('preserve_identifiers', True):
+            # If hybrid mode is enabled and we have frequency data
+            if self.hybrid_mode:
+                freq = self.token_freq.get(normalized_value, 0)
+                if freq >= self.hybrid_min_freq:
+                    # High frequency - preserve as single token
+                    return [normalized_value], 'IDENTIFIER'
+                else:
+                    # Low frequency - split into subtokens to reduce OOV
+                    subtokens = self._split_identifier(value)
+                    if case_policy == 'lower':
+                        subtokens = [s.lower() for s in subtokens]
+                    
+                    if len(subtokens) == 1:
+                        # Can't split further, keep as-is (will likely become UNK)
+                        return [normalized_value], 'IDENTIFIER_RARE'
+                    
+                    # Apply max subtokens limit
+                    max_sub = self.config.get('max_subtokens_per_identifier', 8)
+                    if len(subtokens) > max_sub:
+                        subtokens = subtokens[:max_sub]
+                    return subtokens, 'SPLIT_RARE'
+            else:
+                # No hybrid mode - preserve all identifiers (original behavior)
+                return [normalized_value], 'IDENTIFIER'
+        
+        # Split identifier into subtokens (only if preserve_identifiers=False)
         subtokens = self._split_identifier(value)
         
         if len(subtokens) == 1:
@@ -555,12 +608,39 @@ def build_subtoken_vocab(
     filtered_tokens.sort(key=lambda x: (-x[1], x[0]))
     
     remaining_size = max(0, max_size - len(vocab))
-    for tok, count in filtered_tokens[:remaining_size]:
+    
+    # Track tokens that pass min_freq but exceed vocab limit
+    tokens_added = filtered_tokens[:remaining_size]
+    tokens_truncated = filtered_tokens[remaining_size:]  # These become UNK
+    
+    for tok, count in tokens_added:
         vocab[tok] = len(vocab)
     
     # Compute coverage
     covered_count = sum(token_counts.get(tok, 0) for tok in vocab)
     coverage = covered_count / total_tokens if total_tokens > 0 else 0
+    
+    # Compute UNK statistics
+    unk_tokens_count = sum(count for tok, count in tokens_truncated)
+    tokens_below_min_freq = [
+        (tok, count) for tok, count in token_counts.items()
+        if count < min_freq and tok not in vocab
+    ]
+    unk_from_low_freq = sum(count for tok, count in tokens_below_min_freq)
+    
+    total_unk = unk_tokens_count + unk_from_low_freq
+    unk_rate = total_unk / total_tokens if total_tokens > 0 else 0
+    
+    # WARNING: High OOV rate detection
+    # When preserve_identifiers=True with limited vocab, OOV can be very high
+    if unk_rate > 0.10:  # More than 10% UNK is concerning
+        logger.warning(
+            f"HIGH OOV RATE DETECTED: {unk_rate:.1%} of tokens will become UNK! "
+            f"Truncated: {len(tokens_truncated):,} unique ({unk_tokens_count:,} occurrences), "
+            f"Below min_freq: {len(tokens_below_min_freq):,} unique ({unk_from_low_freq:,} occurrences). "
+            f"Consider: 1) Set preserve_identifiers=False, 2) Increase max_vocab_size (currently {max_size}), "
+            f"3) Increase min_freq (currently {min_freq})"
+        )
     
     debug_info = {
         'total_unique_tokens': total_unique,
@@ -570,6 +650,15 @@ def build_subtoken_vocab(
         'min_freq': min_freq,
         'max_size': max_size,
         'reserved_size': len(SPECIAL_TOKENS) + len(DANGEROUS_APIS) + len(DEFENSE_APIS) + len(C_KEYWORDS),
+        # UNK statistics
+        'unk_rate': unk_rate,
+        'unk_from_vocab_limit': len(tokens_truncated),  # Tokens pass min_freq but exceed vocab
+        'unk_from_vocab_limit_count': unk_tokens_count,  # Total occurrences
+        'unk_from_low_freq': len(tokens_below_min_freq),  # Tokens below min_freq
+        'unk_from_low_freq_count': unk_from_low_freq,  # Total occurrences
+        'total_unk_occurrences': total_unk,
+        # Top truncated tokens (for debugging)
+        'top_truncated_tokens': [(tok, count) for tok, count in tokens_truncated[:20]],
     }
     
     return vocab, debug_info

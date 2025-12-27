@@ -153,13 +153,15 @@ elif TOKENIZER_TYPE == 'optimized':
     }
 elif TOKENIZER_TYPE == 'subtoken':
     TOKENIZER_CONFIG = {
-        'min_freq': 2,
-        'max_vocab_size': 15000,  # Subtokens need larger vocab
+        'min_freq': 3,                    # Tăng từ 2 lên 3 (theo Codemau approach)
+        'max_vocab_size': 30000,          # Tăng từ 15k lên 30k (giữ nguyên identifiers)
         'max_seq_length': 512,
         
-        # Subtoken-specific settings
+        # Preserve settings - giữ nguyên tên hàm và biến (theo Codemau)
         'preserve_dangerous_apis': True,
         'preserve_defense_apis': True,
+        'preserve_function_names': True,  # Giữ nguyên tên hàm
+        'preserve_identifiers': True,     # Giữ nguyên tên biến/type
         'preserve_keywords': True,
         'identifier_case': 'lower',       # 'lower', 'preserve', 'smart'
         'digits_policy': 'keep_alnum',    # Keep h264, sha256 intact
