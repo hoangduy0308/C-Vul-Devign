@@ -244,13 +244,13 @@ def get_vectorization_strategy(
     Factory function to get the appropriate vectorization strategy.
     
     Args:
-        tokenizer_type: One of 'preserve', 'optimized', or 'canonical'
+        tokenizer_type: One of 'preserve', 'optimized', 'subtoken', or 'canonical'
         config: Vectorization configuration
         
     Returns:
         VectorizationStrategy instance
     """
-    if tokenizer_type in ('preserve', 'optimized'):
+    if tokenizer_type in ('preserve', 'optimized', 'subtoken'):
         return HeadTailVectorizationStrategy(config)
     elif tokenizer_type == 'canonical':
         return SimpleVectorizationStrategy(config)

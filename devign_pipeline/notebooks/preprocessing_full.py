@@ -26,6 +26,9 @@ from tqdm import tqdm
 
 # Add pipeline to path - auto-detect environment
 NOTEBOOK_DIR = Path(__file__).parent if '__file__' in dir() else Path.cwd()
+
+# Tokenizer constants
+MAX_CANONICAL_IDS = 40  # Max IDs per semantic bucket (e.g., BUF_0 to BUF_39, then BUF_OVF)
 PIPELINE_ROOT = NOTEBOOK_DIR.parent if NOTEBOOK_DIR.name == 'notebooks' else NOTEBOOK_DIR
 
 if os.path.exists('/kaggle/input'):
@@ -64,12 +67,14 @@ except ImportError:
 # MAIN CONFIGURATION - Edit these values as needed
 # ============================================================
 
-# Tokenizer choice: 'preserve', 'canonical', or 'optimized'
+# Tokenizer choice: 'preserve', 'canonical', 'optimized', or 'subtoken'
 # - 'preserve': PreserveIdentifierTokenizer (vocab 30k, keeps variable names)
 # - 'canonical': CanonicalTokenizer (vocab 500, semantic buckets BUF_k/LEN_k/etc.)
 # - 'optimized': OptimizedHybridTokenizer (vocab ~2k, API families + semantic buckets)
 #                Best for reducing overfitting while preserving vulnerability semantics
-TOKENIZER_TYPE = 'optimized'
+# - 'subtoken': HybridSubtokenTokenizer (splits identifiers into subtokens)
+#               Best for real-world datasets like Devign (FFmpeg/QEMU) - preserves domain semantics
+TOKENIZER_TYPE = 'subtoken'
 
 # PDG-based slicing configuration
 # Fixed: criterion clustering + separator + token budget enforcement
@@ -139,7 +144,54 @@ elif TOKENIZER_TYPE == 'optimized':
         # CRITICAL: Must be True to preserve data flow tracking (VAR_0 → VAR_0 correlations)
         # Setting to False collapses all variables to single token, destroying discriminative signal
         'use_indexed_buckets': True,   # BUF_0, BUF_1... preserves identity across slice
-        'max_canonical_ids': 8,        # Max IDs per bucket (BUF_0 to BUF_7, then BUF_OVF)
+        'max_canonical_ids': MAX_CANONICAL_IDS,  # Max IDs per bucket - increased from 8 to reduce *_OVF overflow
+        
+        # Truncation strategy
+        'truncation_strategy': 'head_tail',
+        'head_tokens': 192,
+        'tail_tokens': 319,
+    }
+elif TOKENIZER_TYPE == 'subtoken':
+    TOKENIZER_CONFIG = {
+        'min_freq': 2,
+        'max_vocab_size': 15000,  # Subtokens need larger vocab
+        'max_seq_length': 512,
+        
+        # Subtoken-specific settings
+        'preserve_dangerous_apis': True,
+        'preserve_defense_apis': True,
+        'preserve_keywords': True,
+        'identifier_case': 'lower',       # 'lower', 'preserve', 'smart'
+        'digits_policy': 'keep_alnum',    # Keep h264, sha256 intact
+        'max_subtokens_per_identifier': 8,
+        
+        # Numeric policy
+        'numeric_policy': {
+            'keep_small_integers': True,
+            'keep_negative_one': True,
+            'keep_power_of_two': True,
+            'keep_common_sizes': True,
+            'keep_hex_masks': True,
+            'keep_permissions': True,
+            'use_bit_width_categories': True,
+        },
+        
+        # String literal mapping
+        'string_policy': {
+            'map_sql': True,
+            'map_url': True,
+            'map_path': True,
+            'map_cred': True,
+            'map_regex': True,
+            'map_ip': True,
+            'map_email': True,
+        },
+        
+        # Project-specific macro prefixes (for Devign: FFmpeg/QEMU)
+        'macro_prefixes': ('CONFIG_', 'AVERROR_', 'CODEC_', 'FF_', 'AV_'),
+        
+        # Vocab persistence - load existing vocab instead of rebuilding
+        'vocab_path': None,  # Set to path to load pre-built vocab (e.g., 'output/vocab.json')
         
         # Truncation strategy
         'truncation_strategy': 'head_tail',
@@ -176,7 +228,7 @@ DEBUG_CONFIG = {
 
 # Debug export config - for tokenization debugging
 DEBUG_EXPORT = True  # Set to False to disable
-DEBUG_MAX_SAMPLES = 1000  # Max samples per split to export (None = all)
+DEBUG_MAX_SAMPLES = None  # Max samples per split to export (None = all)
 
 print("=== Configuration ===")
 print(f"Tokenizer type: {TOKENIZER_TYPE}")
@@ -213,6 +265,16 @@ elif TOKENIZER_TYPE == 'optimized':
         API_FAMILIES,
         DEFENSE_FAMILIES,
         SEMANTIC_BUCKETS,
+    )
+elif TOKENIZER_TYPE == 'subtoken':
+    from src.tokenization.subtoken_tokenizer import (
+        HybridSubtokenTokenizer,
+        build_subtoken_vocab,
+        PRESERVED_NUMBERS,
+        PRESERVED_HEX,
+        PRESERVED_OCTAL,
+        STRING_CATEGORIES,
+        NUMERIC_TOKENS,
     )
 else:
     from src.tokenization.hybrid_tokenizer import (
@@ -617,6 +679,33 @@ elif TOKENIZER_TYPE == 'optimized':
     test_stats = [{} for _ in range(len(test_tokens))]
     train_details = val_details = test_details = None
 
+elif TOKENIZER_TYPE == 'subtoken':
+    tokenizer = HybridSubtokenTokenizer(TOKENIZER_CONFIG)
+    
+    print("\nTokenizing with HybridSubtokenTokenizer:")
+    print(f"  - Identifier case: {TOKENIZER_CONFIG.get('identifier_case', 'lower')}")
+    print(f"  - Digits policy: {TOKENIZER_CONFIG.get('digits_policy', 'keep_alnum')}")
+    print(f"  - Max subtokens per identifier: {TOKENIZER_CONFIG.get('max_subtokens_per_identifier', 8)}")
+    
+    print("\nTokenizing train set...")
+    train_tokens, train_details, train_stats = tokenizer.tokenize_batch(train_sliced, with_details=True)
+    
+    print("Tokenizing val set...")
+    val_tokens, val_details, val_stats = tokenizer.tokenize_batch(val_sliced, with_details=True)
+    
+    print("Tokenizing test set...")
+    test_tokens, test_details, test_stats = tokenizer.tokenize_batch(test_sliced, with_details=True)
+    
+    # Print sample identifier splits
+    if train_stats:
+        all_splits = []
+        for stat in train_stats[:100]:
+            all_splits.extend(stat.get('identifiers_split', []))
+        if all_splits:
+            print(f"\nSample identifier splits:")
+            for orig, subtoks in all_splits[:10]:
+                print(f"  {orig} -> {subtoks}")
+
 else:  # canonical
     tokenizer = CanonicalTokenizer(
         preserve_dangerous_apis=TOKENIZER_CONFIG['preserve_dangerous_apis'],
@@ -711,6 +800,27 @@ elif TOKENIZER_TYPE == 'optimized':
     print(f"\nSample vocab entries:")
     sample_tokens = ['PAD', 'UNK', 'SEP', 'malloc', 'API_ALLOC', 'API_FREE', 
                      'DEF_CHECK', 'BUF_0', 'LEN_0', 'PTR_0', 'IDX_0']
+    for tok in sample_tokens:
+        if tok in vocab:
+            print(f"  {tok}: {vocab[tok]}")
+
+elif TOKENIZER_TYPE == 'subtoken':
+    vocab, vocab_debug = build_subtoken_vocab(
+        train_tokens,
+        min_freq=TOKENIZER_CONFIG['min_freq'],
+        max_size=TOKENIZER_CONFIG['max_vocab_size'],
+    )
+    
+    print(f"\nSubtoken Vocabulary Statistics:")
+    print(f"  Vocab size: {vocab_debug['vocab_size']}")
+    print(f"  Total unique tokens: {vocab_debug['total_unique_tokens']}")
+    print(f"  Coverage: {vocab_debug['coverage']:.2%}")
+    print(f"  Reserved tokens: {vocab_debug['reserved_size']}")
+    
+    print(f"\nSample vocab entries:")
+    sample_tokens = ['PAD', 'UNK', 'SEP', 'malloc', 'memcpy', 'free',
+                     'av', 'codec', 'frame', 'buf', 'len', 'ptr',
+                     'h264', 'qemu', 'filter', 'context']
     for tok in sample_tokens:
         if tok in vocab:
             print(f"  {tok}: {vocab[tok]}")
@@ -1090,6 +1200,14 @@ elif TOKENIZER_TYPE == 'optimized':
     config['defense_families'] = list(DEFENSE_FAMILIES.keys())
     config['semantic_buckets'] = list(SEMANTIC_BUCKETS.keys())
 
+elif TOKENIZER_TYPE == 'subtoken':
+    config['train_unk_rate'] = train_vec_stats['unk_rate']
+    config['val_unk_rate'] = val_vec_stats['unk_rate']
+    config['test_unk_rate'] = test_vec_stats['unk_rate']
+    config['vocab_coverage'] = vocab_debug.get('coverage', 1.0)
+    config['identifier_case'] = TOKENIZER_CONFIG.get('identifier_case', 'lower')
+    config['digits_policy'] = TOKENIZER_CONFIG.get('digits_policy', 'keep_alnum')
+
 with open(os.path.join(OUTPUT_DIR, 'config.json'), 'w') as f:
     json.dump(config, f, indent=2)
 print(f"Saved: config.json")
@@ -1110,8 +1228,19 @@ elif TOKENIZER_TYPE == 'optimized':
         json.dump(vocab_debug, f, indent=2, ensure_ascii=False)
     print(f"Saved: vocab_debug.json")
 
+elif TOKENIZER_TYPE == 'subtoken':
+    vocab_debug['preserved_numbers'] = list(PRESERVED_NUMBERS)
+    vocab_debug['preserved_hex'] = list(PRESERVED_HEX)
+    vocab_debug['preserved_octal'] = list(PRESERVED_OCTAL)
+    vocab_debug['string_categories'] = list(STRING_CATEGORIES)
+    vocab_debug['numeric_tokens'] = list(NUMERIC_TOKENS)
+    
+    with open(os.path.join(OUTPUT_DIR, 'vocab_debug.json'), 'w', encoding='utf-8') as f:
+        json.dump(vocab_debug, f, indent=2, ensure_ascii=False)
+    print(f"Saved: vocab_debug.json")
+
 # === 6. Save vectorization_stats.json ===
-if TOKENIZER_TYPE in ('preserve', 'optimized'):
+if TOKENIZER_TYPE in ('preserve', 'optimized', 'subtoken'):
     vec_stats = {
         'train': {
             'shape': list(train_input_ids.shape),
