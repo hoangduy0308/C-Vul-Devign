@@ -228,11 +228,13 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ steps.version.outputs.version }}
           name: Devign Scanner ${{ steps.version.outputs.version }}
           body_path: build/RELEASE_NOTES.md
           files: |
             build/devign-scanner.zip
           fail_on_unmatched_files: false
+          prerelease: ${{ steps.version.outputs.version == 'latest' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
