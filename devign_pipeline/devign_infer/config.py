@@ -54,13 +54,38 @@ def find_model_path(
     script_dir: Optional[Path] = None
 ) -> Optional[str]:
     """Find model path with auto-detection."""
-    return resolve_path(
-        cli_arg=cli_arg,
-        env_var="MODEL_PATH",
-        relative_to_script="../models/best_model.pt",
-        default="models/best_model.pt",
-        script_dir=script_dir
-    )
+    # Try multiple relative paths
+    candidates = [
+        "models/best_model.pt",           # Same level as script
+        "../models/best_model.pt",        # Parent level (for dev)
+        "models/best_v2_seed42.pt",       # Ensemble model
+        "../models/best_v2_seed42.pt",
+    ]
+    
+    if cli_arg:
+        if Path(cli_arg).exists():
+            return str(Path(cli_arg).resolve())
+        return cli_arg
+    
+    env_value = os.environ.get("MODEL_PATH")
+    if env_value and Path(env_value).exists():
+        return str(Path(env_value).resolve())
+    
+    if script_dir:
+        for rel_path in candidates:
+            full_path = script_dir / rel_path
+            if full_path.exists():
+                return str(full_path.resolve())
+    
+    # Check current directory
+    for rel_path in candidates:
+        if Path(rel_path).exists():
+            return str(Path(rel_path).resolve())
+    
+    # Return first candidate for error message
+    if script_dir:
+        return str(script_dir / candidates[0])
+    return candidates[0]
 
 
 def find_vocab_path(
@@ -68,13 +93,35 @@ def find_vocab_path(
     script_dir: Optional[Path] = None
 ) -> Optional[str]:
     """Find vocab path with auto-detection."""
-    return resolve_path(
-        cli_arg=cli_arg,
-        env_var="VOCAB_PATH",
-        relative_to_script="../models/vocab.json",
-        default="models/vocab.json",
-        script_dir=script_dir
-    )
+    candidates = [
+        "models/vocab.json",
+        "../models/vocab.json",
+    ]
+    
+    if cli_arg:
+        if Path(cli_arg).exists():
+            return str(Path(cli_arg).resolve())
+        return cli_arg
+    
+    env_value = os.environ.get("VOCAB_PATH")
+    if env_value and Path(env_value).exists():
+        return str(Path(env_value).resolve())
+    
+    if script_dir:
+        for rel_path in candidates:
+            full_path = script_dir / rel_path
+            if full_path.exists():
+                return str(full_path.resolve())
+    
+    # Check current directory
+    for rel_path in candidates:
+        if Path(rel_path).exists():
+            return str(Path(rel_path).resolve())
+    
+    # Return first candidate for error message
+    if script_dir:
+        return str(script_dir / candidates[0])
+    return candidates[0]
 
 
 def validate_paths(model_path: str, vocab_path: str) -> List[str]:

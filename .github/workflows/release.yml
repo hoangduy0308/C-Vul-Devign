@@ -166,8 +166,8 @@ jobs:
       - name: Generate release notes
         run: |
           VERSION=${{ steps.version.outputs.version }}
-          cat > build/RELEASE_NOTES.md << EOF
-          ## Devign Vulnerability Scanner $VERSION
+          cat > build/RELEASE_NOTES.md << 'EOF'
+          ## Devign Vulnerability Scanner
           
           AI-powered C/C++ vulnerability detection using BiGRU deep learning.
           
@@ -175,15 +175,15 @@ jobs:
           
           | Package | Description |
           |---------|-------------|
-          | devign-scanner.zip | Complete scanner with trained models |
+          | devign-scanner.zip | Complete scanner with trained models (~25MB) |
           
           ### 🚀 Quick Start
           
           #### Option 1: GitHub Action (Recommended)
           
-          Add to your repository's \`.github/workflows/security.yml\`:
+          Add to your repository's `.github/workflows/security.yml`:
           
-          \`\`\`yaml
+          ```yaml
           name: Security Scan
           on: [push, pull_request]
           jobs:
@@ -193,29 +193,28 @@ jobs:
                 security-events: write
               steps:
                 - uses: actions/checkout@v4
-                - uses: hoangduy0308/C-Vul-Devign@$VERSION
+                - uses: hoangduy0308/C-Vul-Devign@main
                   with:
                     threshold: '0.5'
-          \`\`\`
+          ```
           
           #### Option 2: CLI
           
-          \`\`\`bash
-          # Download
-          curl -L https://github.com/hoangduy0308/C-Vul-Devign/releases/download/$VERSION/devign-scanner.zip -o scanner.zip
+          ```bash
+          # Download latest scanner
+          curl -L https://github.com/hoangduy0308/C-Vul-Devign/releases/latest/download/devign-scanner.zip -o scanner.zip
           unzip scanner.zip
           
           # Install dependencies
           pip install torch numpy tqdm --index-url https://download.pytorch.org/whl/cpu
           
-          # Scan
+          # Scan your code
           python devign_scan.py scan /path/to/your/code
-          \`\`\`
+          ```
           
           ### 📖 Documentation
           
-          - [Integration Guide](https://github.com/hoangduy0308/C-Vul-Devign/blob/main/INTEGRATION_GUIDE.md)
-          - [CI/CD Setup](https://github.com/hoangduy0308/C-Vul-Devign/blob/main/CI_CD_README.md)
+          - [README](https://github.com/hoangduy0308/C-Vul-Devign/blob/main/README.md)
           
           EOF
       
