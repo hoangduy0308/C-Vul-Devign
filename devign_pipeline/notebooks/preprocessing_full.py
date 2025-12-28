@@ -20,6 +20,7 @@ import sys
 import os
 import re
 import json
+from collections import defaultdict
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
@@ -591,6 +592,85 @@ if train_sliced:
     print(f"  Median: {np.median(train_slice_lens):.1f}")
     print(f"  Max: {max(train_slice_lens)}")
     print(f"  Min: {min(train_slice_lens)}")
+
+# %% [markdown]
+# ## 5.1. Remove Duplicate Slices (Label Conflict Resolution)
+
+# %%
+print("\n" + "=" * 60)
+print("STEP 2.1: REMOVE DUPLICATE SLICES (LABEL CONFLICT RESOLUTION)")
+print("=" * 60)
+
+def remove_conflicting_samples(sliced_codes, labels, split_name="train"):
+    """
+    Remove samples where the same sliced_code has different labels.
+    This prevents the model from learning conflicting patterns.
+    
+    Returns: filtered sliced_codes, filtered labels, indices to keep
+    """
+    # Group by sliced_code
+    code_to_items = defaultdict(list)
+    for idx, (code, label) in enumerate(zip(sliced_codes, labels)):
+        code_to_items[code].append((idx, label))
+    
+    # Find codes with conflicting labels
+    conflicting_codes = set()
+    same_label_dups = 0
+    for code, items in code_to_items.items():
+        labels_set = set(label for idx, label in items)
+        if len(items) > 1:
+            if len(labels_set) > 1:
+                # Conflict: same code, different labels - remove ALL
+                conflicting_codes.add(code)
+            else:
+                # Same code, same label - keep only first
+                same_label_dups += len(items) - 1
+    
+    # Build keep indices
+    seen_codes = set()
+    keep_indices = []
+    for idx, (code, label) in enumerate(zip(sliced_codes, labels)):
+        if code in conflicting_codes:
+            continue  # Remove conflicting samples
+        if code in seen_codes:
+            continue  # Remove duplicate (same label)
+        seen_codes.add(code)
+        keep_indices.append(idx)
+    
+    conflict_removed = sum(len(items) for code, items in code_to_items.items() if code in conflicting_codes)
+    
+    print(f"\n{split_name}:")
+    print(f"  Original samples: {len(sliced_codes)}")
+    print(f"  Conflicting codes (same code, diff labels): {len(conflicting_codes)}")
+    print(f"  Samples removed (conflicts): {conflict_removed}")
+    print(f"  Samples removed (same-label dups): {same_label_dups}")
+    print(f"  Final samples: {len(keep_indices)}")
+    
+    return keep_indices
+
+# Apply deduplication to each split
+train_labels = train_df['target'].tolist()
+val_labels = val_df['target'].tolist()
+test_labels = test_df['target'].tolist()
+
+train_keep_idx = remove_conflicting_samples(train_sliced, train_labels, "Train")
+val_keep_idx = remove_conflicting_samples(val_sliced, val_labels, "Val")
+test_keep_idx = remove_conflicting_samples(test_sliced, test_labels, "Test")
+
+# Filter all data
+train_sliced = [train_sliced[i] for i in train_keep_idx]
+train_df = train_df.iloc[train_keep_idx].reset_index(drop=True)
+
+val_sliced = [val_sliced[i] for i in val_keep_idx]
+val_df = val_df.iloc[val_keep_idx].reset_index(drop=True)
+
+test_sliced = [test_sliced[i] for i in test_keep_idx]
+test_df = test_df.iloc[test_keep_idx].reset_index(drop=True)
+
+print(f"\n✓ After slice deduplication:")
+print(f"  Train: {len(train_df)} samples (vuln: {(train_df['target']==1).sum()})")
+print(f"  Val: {len(val_df)} samples (vuln: {(val_df['target']==1).sum()})")
+print(f"  Test: {len(test_df)} samples (vuln: {(test_df['target']==1).sum()})")
 
 # %% [markdown]
 # ## 6. Extract Vulnerability Features (Optional)
