@@ -107,7 +107,7 @@ class DevignDataset(Dataset):
         npz_path: str, 
         max_seq_length: int = 512, 
         load_vuln_features: bool = False, 
-        vuln_feature_dim: int = 25
+        vuln_feature_dim: int = 35  # V3 Enhanced features: 35 dimensions
     ):
         self.max_seq_length = max_seq_length
         self.load_vuln_features = load_vuln_features
@@ -207,7 +207,7 @@ def create_dataloaders(
     max_seq_length: int,
     num_workers: int = 2,
     load_vuln_features: bool = False,
-    vuln_feature_dim: int = 25
+    vuln_feature_dim: int = 35  # V3 Enhanced features: 35 dimensions
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Create train/val/test dataloaders."""
     train_path = Path(data_dir) / 'train.npz'
@@ -1358,7 +1358,7 @@ def train_single_seed(
     swa_model = None
     swa_scheduler = None
     if config.use_swa:
-        swa_model = AveragedModel(base_model)
+        swa_model = AveragedModel(model)
         swa_scheduler = SWALR(optimizer, swa_lr=config.swa_lr, anneal_epochs=2)
     
     # Training loop with history tracking
@@ -1410,7 +1410,7 @@ def train_single_seed(
         
         # Scheduler step
         if config.use_swa and epoch >= config.swa_start_epoch:
-            swa_model.update_parameters(base_model)
+            swa_model.update_parameters(model)
             swa_scheduler.step()
         elif config.scheduler_type == 'plateau':
             scheduler.step(val_metrics['auc'])
@@ -1428,7 +1428,7 @@ def train_single_seed(
         if current_metric > best_score:
             best_score = current_metric
             best_epoch = epoch
-            best_state = {k: v.cpu().clone() for k, v in base_model.state_dict().items()}
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             best_metrics = val_metrics
         
         if early_stopping(current_metric):
@@ -1450,10 +1450,10 @@ def train_single_seed(
             if verbose:
                 print(f"  [SWA] Using SWA model (F1={swa_metrics['f1']:.4f} > {best_score:.4f})")
         else:
-            base_model.load_state_dict(best_state)
+            model.load_state_dict(best_state)
             final_model = model
     else:
-        base_model.load_state_dict(best_state)
+        model.load_state_dict(best_state)
         final_model = model
     
     # Temperature scaling - Oracle: Post-hoc calibration helps precision

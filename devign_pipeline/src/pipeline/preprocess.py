@@ -35,6 +35,7 @@ from src.data.cache import (
 )
 from src.vuln.dictionary import VulnDictionary, get_default_dictionary
 from src.vuln.rules import extract_vuln_features, get_vulnerability_summary
+from src.vuln.enhanced_features import extract_enhanced_features, get_feature_names
 from src.ast.parser import CFamilyParser, ParseResult
 from src.graphs.cfg import CFGBuilder, CFG, serialize_cfg, deserialize_cfg
 from src.graphs.dfg import DFGBuilder, DFG, serialize_dfg, deserialize_dfg
@@ -482,11 +483,11 @@ class PreprocessPipeline:
     def _run_step_vuln_features(self, split: str) -> None:
         """Step 1: Extract vulnerability features for each chunk
         
-        Uses get_vulnerability_summary for rich analysis including:
-        - risk_score (0-1 float)
-        - risk_level (none/low/medium/high)
-        - has_vulnerabilities flag
-        - Individual feature counts as vf_* columns
+        Uses ENHANCED FEATURES v3 with:
+        - RATIO-BASED: bounds_per_pointer_op, null_checks_per_malloc, defense_ratio
+        - PATTERN-BASED BINARY: has_unbounded_strcpy, has_unchecked_malloc, etc.
+        - COMPOSITE SCORES: danger_score, vuln_likelihood_score
+        - Legacy features via get_vulnerability_summary for backward compatibility
         """
         raw_chunks = list_chunks(str(self.output_dir), 'raw', 'parquet')
         
@@ -496,7 +497,9 @@ class PreprocessPipeline:
         chunk_idx = self._get_resume_chunk('vuln_features', split)
         total_processed = 0
         
-        vuln_feature_keys = None
+        # Get feature names from enhanced_features module (consistent ordering)
+        enhanced_feature_keys = get_feature_names()
+        vuln_feature_keys = None  # Legacy features from get_vulnerability_summary
         
         for i, chunk_path_str in enumerate(raw_chunks):
             if i < chunk_idx:
@@ -504,36 +507,47 @@ class PreprocessPipeline:
             
             chunk_df = load_chunk(chunk_path_str)
             
+            # Legacy features
             risk_scores = []
             risk_levels = []
             has_vulns = []
-            feature_values = {}
+            legacy_feature_values = {}
+            
+            # Enhanced features v3
+            enhanced_feature_values = {key: [] for key in enhanced_feature_keys}
             
             for _, row in chunk_df.iterrows():
                 code = row.get('func', '') or row.get('func_clean', '')
                 
+                # Legacy summary (for backward compatibility)
                 summary = get_vulnerability_summary(code, self.vuln_dict)
-                
                 risk_scores.append(summary.get('risk_score', 0.0))
                 risk_levels.append(summary.get('risk_level', 'none'))
                 has_vulns.append(summary.get('has_vulnerabilities', False))
                 
-                features = summary.get('features', {})
-                
+                legacy_features = summary.get('features', {})
                 if vuln_feature_keys is None:
-                    vuln_feature_keys = list(features.keys())
+                    vuln_feature_keys = list(legacy_features.keys())
                     for key in vuln_feature_keys:
-                        feature_values[key] = []
-                
+                        legacy_feature_values[key] = []
                 for key in vuln_feature_keys:
-                    feature_values[key].append(features.get(key, 0))
+                    legacy_feature_values[key].append(legacy_features.get(key, 0))
+                
+                # ENHANCED FEATURES v3 (ratio-based + pattern-based)
+                enhanced_features = extract_enhanced_features(code)
+                for key in enhanced_feature_keys:
+                    enhanced_feature_values[key].append(enhanced_features.get(key, 0.0))
             
+            # Add legacy columns
             chunk_df['vuln_risk_score'] = risk_scores
             chunk_df['vuln_risk_level'] = risk_levels
             chunk_df['vuln_has_issues'] = has_vulns
-            
             for key in (vuln_feature_keys or []):
-                chunk_df[f'vf_{key}'] = feature_values[key]
+                chunk_df[f'vf_{key}'] = legacy_feature_values[key]
+            
+            # Add ENHANCED feature columns (prefixed with 'ef_')
+            for key in enhanced_feature_keys:
+                chunk_df[f'ef_{key}'] = enhanced_feature_values[key]
             
             out_path = chunk_path(str(self.output_dir), 'vuln_features', i, 'parquet')
             save_chunk(chunk_df, out_path)
@@ -546,10 +560,18 @@ class PreprocessPipeline:
                 samples_processed=total_processed
             )
             
-            self.logger.info(f"Processed vuln features for chunk {i}: {sum(has_vulns)}/{len(has_vulns)} with issues")
+            # Log enhanced feature stats
+            danger_scores = enhanced_feature_values.get('danger_score', [0])
+            avg_danger = sum(danger_scores) / max(len(danger_scores), 1)
+            self.logger.info(
+                f"Processed vuln features for chunk {i}: "
+                f"{sum(has_vulns)}/{len(has_vulns)} with issues, "
+                f"avg danger_score={avg_danger:.3f}"
+            )
             
             if self.config.gc_after_chunk:
-                del chunk_df, risk_scores, risk_levels, has_vulns, feature_values
+                del chunk_df, risk_scores, risk_levels, has_vulns
+                del legacy_feature_values, enhanced_feature_values
                 gc.collect()
     
     def _run_step_ast(self, split: str) -> None:

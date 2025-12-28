@@ -136,9 +136,10 @@ class BaselineConfig:
     
     # ============= VULN FEATURES (optional) =============
     use_vuln_features: bool = True  # Enabled: handcrafted features help when tokens lack discriminative power
-    vuln_feature_dim: int = 25
+    vuln_feature_dim: int = 35  # Enhanced features v3: 35 features (ratio-based + pattern-based)
     vuln_feature_hidden_dim: int = 64
     vuln_feature_dropout: float = 0.4  # Oracle: Increase to 0.3-0.5 to prevent feature overfitting
+    use_enhanced_features: bool = True  # Use new ratio-based + pattern-based features (ef_* columns)
     
     # ============= TOKEN AUGMENTATION =============
     # Oracle: Token augmentation is one of best regularizers for code models

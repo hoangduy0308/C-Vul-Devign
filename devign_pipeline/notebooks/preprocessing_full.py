@@ -311,7 +311,12 @@ from src.tokenization.token_types import (
 
 if FEATURE_CONFIG['extract_features']:
     from src.vuln.slice_features import extract_slice_features, extract_slice_features_batch, SLICE_FEATURE_NAMES
+    from src.vuln.enhanced_features import extract_enhanced_features, get_feature_names as get_enhanced_feature_names
     from src.vuln.dictionary import VulnDictionary
+    
+    # Use enhanced features (35 features: ratio-based + pattern-based binary)
+    ENHANCED_FEATURE_NAMES = get_enhanced_feature_names()
+    print(f"Enhanced features loaded: {len(ENHANCED_FEATURE_NAMES)} features")
 
 print("All modules imported successfully!")
 
@@ -693,44 +698,57 @@ print(f"  Test: {len(test_df)} samples (vuln: {(test_df['target']==1).sum()})")
 # %%
 if FEATURE_CONFIG['extract_features']:
     print("\n" + "=" * 60)
-    print("STEP 3: EXTRACTING VULNERABILITY FEATURES")
+    print("STEP 3: EXTRACTING VULNERABILITY FEATURES (ENHANCED V3)")
     print("=" * 60)
     
     vuln_dict = VulnDictionary()
     
-    print(f"Feature count: {len(SLICE_FEATURE_NAMES)}")
-    print(f"Features: {SLICE_FEATURE_NAMES}")
+    # Use ENHANCED features (35 features: ratio-based + pattern-based binary)
+    print(f"Using ENHANCED features: {len(ENHANCED_FEATURE_NAMES)} features")
+    print(f"Feature categories:")
+    print(f"  - Ratio-based: bounds_per_pointer_op, null_checks_per_malloc, defense_ratio, etc.")
+    print(f"  - Pattern-based binary: has_unbounded_strcpy, has_unchecked_malloc, etc.")
+    print(f"  - Composite scores: danger_score, vuln_likelihood_score")
     
-    def process_features_batch(sliced_codes, original_codes, batch_size=500):
-        """Extract features in batches."""
+    def process_enhanced_features_batch(sliced_codes, batch_size=500):
+        """Extract ENHANCED features in batches."""
         n_samples = len(sliced_codes)
         all_features = []
         
-        for start in tqdm(range(0, n_samples, batch_size), desc="Extracting features"):
+        for start in tqdm(range(0, n_samples, batch_size), desc="Extracting enhanced features"):
             end = min(start + batch_size, n_samples)
             batch_slices = sliced_codes[start:end]
-            batch_fulls = original_codes[start:end]
             
-            batch_features = extract_slice_features_batch(
-                batch_slices, batch_fulls, vuln_dict, n_jobs=1
-            )
+            batch_features = []
+            for code in batch_slices:
+                features = extract_enhanced_features(code)
+                batch_features.append(features)
+            
             all_features.extend(batch_features)
         
         return all_features
     
-    print("\nExtracting train features...")
-    train_features = process_features_batch(train_sliced, train_df['func'].tolist(), PROCESS_CONFIG['batch_size'])
+    print("\nExtracting train features (ENHANCED)...")
+    train_features = process_enhanced_features_batch(train_sliced, PROCESS_CONFIG['batch_size'])
     
-    print("Extracting val features...")
-    val_features = process_features_batch(val_sliced, val_df['func'].tolist(), PROCESS_CONFIG['batch_size'])
+    print("Extracting val features (ENHANCED)...")
+    val_features = process_enhanced_features_batch(val_sliced, PROCESS_CONFIG['batch_size'])
     
-    print("Extracting test features...")
-    test_features = process_features_batch(test_sliced, test_df['func'].tolist(), PROCESS_CONFIG['batch_size'])
+    print("Extracting test features (ENHANCED)...")
+    test_features = process_enhanced_features_batch(test_sliced, PROCESS_CONFIG['batch_size'])
     
     print(f"\nFeature extraction completed:")
-    print(f"  Train: {len(train_features)} samples x {len(SLICE_FEATURE_NAMES)} features")
+    print(f"  Train: {len(train_features)} samples x {len(ENHANCED_FEATURE_NAMES)} features")
     print(f"  Val: {len(val_features)} samples")
     print(f"  Test: {len(test_features)} samples")
+    
+    # Show sample feature values
+    if train_features:
+        sample = train_features[0]
+        print(f"\nSample feature values (first sample):")
+        for name in ['danger_score', 'vuln_likelihood_score', 'defense_ratio', 'has_unbounded_strcpy', 'has_unchecked_malloc']:
+            if name in sample:
+                print(f"  {name}: {sample[name]:.4f}")
 else:
     train_features = val_features = test_features = None
     print("\n[SKIP] Feature extraction disabled")
@@ -1175,31 +1193,26 @@ if DEBUG_EXPORT:
 # %%
 if FEATURE_CONFIG['extract_features'] and train_features:
     print("\n" + "=" * 60)
-    print("STEP 7: PROCESSING VULNERABILITY FEATURES")
+    print("STEP 7: PROCESSING VULNERABILITY FEATURES (ENHANCED V3)")
     print("=" * 60)
     
     def features_to_array(features_list):
-        """Convert list of feature dicts to numpy array."""
+        """Convert list of feature dicts to numpy array (ENHANCED features)."""
         n_samples = len(features_list)
-        n_features = len(SLICE_FEATURE_NAMES)
+        n_features = len(ENHANCED_FEATURE_NAMES)
         
         arr = np.zeros((n_samples, n_features), dtype=np.float32)
         
         for i, feat_dict in enumerate(features_list):
-            for j, name in enumerate(SLICE_FEATURE_NAMES):
+            for j, name in enumerate(ENHANCED_FEATURE_NAMES):
                 arr[i, j] = feat_dict.get(name, 0.0)
         
         return arr
     
     def normalize_features(train_feat, val_feat, test_feat, feature_names):
-        """Normalize features using log1p + z-score."""
-        count_features = [
-            'loc_slice', 'stmt_count_slice', 'dangerous_call_count_slice',
-            'dangerous_call_without_check_count_slice', 'pointer_deref_count_slice',
-            'pointer_deref_without_null_check_count_slice', 'array_access_count_slice',
-            'array_access_without_bounds_check_count_slice', 'null_check_count_slice',
-            'bounds_check_count_slice', 'loc_full'
-        ]
+        """Normalize features using z-score only (enhanced features are already 0-1 normalized)."""
+        # Enhanced features are already ratio-based (0-1) or binary (0/1)
+        # Only apply z-score normalization, skip log1p for count features
         
         feature_names_list = list(feature_names)
         
@@ -1207,13 +1220,7 @@ if FEATURE_CONFIG['extract_features'] and train_features:
         val_norm = val_feat.copy()
         test_norm = test_feat.copy()
         
-        for feat_name in count_features:
-            if feat_name in feature_names_list:
-                idx = feature_names_list.index(feat_name)
-                train_norm[:, idx] = np.log1p(train_norm[:, idx])
-                val_norm[:, idx] = np.log1p(val_norm[:, idx])
-                test_norm[:, idx] = np.log1p(test_norm[:, idx])
-        
+        # Z-score normalization
         train_mean = np.mean(train_norm, axis=0)
         train_std = np.std(train_norm, axis=0)
         train_std[train_std == 0] = 1.0
@@ -1225,32 +1232,35 @@ if FEATURE_CONFIG['extract_features'] and train_features:
         norm_stats = {
             'mean': train_mean.tolist(),
             'std': train_std.tolist(),
-            'count_features': count_features,
-            'feature_names': feature_names_list
+            'feature_names': feature_names_list,
+            'feature_type': 'enhanced_v3'
         }
         
         return train_norm, val_norm, test_norm, norm_stats
     
     # Convert features to arrays
-    print("Converting features to arrays...")
+    print("Converting ENHANCED features to arrays...")
     train_vuln_features = features_to_array(train_features)
     val_vuln_features = features_to_array(val_features)
     test_vuln_features = features_to_array(test_features)
     
-    print(f"  Train: {train_vuln_features.shape}")
+    print(f"  Train: {train_vuln_features.shape} ({len(ENHANCED_FEATURE_NAMES)} features)")
     print(f"  Val: {val_vuln_features.shape}")
     print(f"  Test: {test_vuln_features.shape}")
     
     if FEATURE_CONFIG['normalize_features']:
-        print("\nNormalizing features (log1p + z-score)...")
+        print("\nNormalizing features (z-score)...")
         train_vuln_features, val_vuln_features, test_vuln_features, norm_stats = normalize_features(
-            train_vuln_features, val_vuln_features, test_vuln_features, SLICE_FEATURE_NAMES
+            train_vuln_features, val_vuln_features, test_vuln_features, ENHANCED_FEATURE_NAMES
         )
         
         print("\nFeature stats after normalization (train):")
-        for i, name in enumerate(SLICE_FEATURE_NAMES[:5]):
-            col = train_vuln_features[:, i]
-            print(f"  {name}: mean={np.mean(col):.3f}, std={np.std(col):.3f}")
+        key_features = ['danger_score', 'vuln_likelihood_score', 'defense_ratio', 'has_unbounded_strcpy', 'has_unchecked_malloc']
+        for name in key_features:
+            if name in ENHANCED_FEATURE_NAMES:
+                idx = ENHANCED_FEATURE_NAMES.index(name)
+                col = train_vuln_features[:, idx]
+                print(f"  {name}: mean={np.mean(col):.3f}, std={np.std(col):.3f}")
     else:
         norm_stats = None
 else:
@@ -1299,23 +1309,23 @@ print(f"Saved: test.npz {test_input_ids.shape} (with token_type_ids)")
 
 # === 2. Save vulnerability features (if extracted) ===
 if train_vuln_features is not None:
-    print("\nSaving vulnerability features...")
+    print("\nSaving ENHANCED vulnerability features...")
     np.savez_compressed(
         os.path.join(OUTPUT_DIR, 'train_vuln.npz'),
         features=train_vuln_features,
-        feature_names=SLICE_FEATURE_NAMES
+        feature_names=ENHANCED_FEATURE_NAMES
     )
     np.savez_compressed(
         os.path.join(OUTPUT_DIR, 'val_vuln.npz'),
         features=val_vuln_features,
-        feature_names=SLICE_FEATURE_NAMES
+        feature_names=ENHANCED_FEATURE_NAMES
     )
     np.savez_compressed(
         os.path.join(OUTPUT_DIR, 'test_vuln.npz'),
         features=test_vuln_features,
-        feature_names=SLICE_FEATURE_NAMES
+        feature_names=ENHANCED_FEATURE_NAMES
     )
-    print(f"Saved: train_vuln.npz, val_vuln.npz, test_vuln.npz")
+    print(f"Saved: train_vuln.npz, val_vuln.npz, test_vuln.npz ({len(ENHANCED_FEATURE_NAMES)} features)")
     
     if norm_stats:
         with open(os.path.join(OUTPUT_DIR, 'feature_norm_stats.json'), 'w') as f:
@@ -1339,8 +1349,9 @@ config = {
     'val_samples': len(val_df),
     'test_samples': len(test_df),
     'features_extracted': FEATURE_CONFIG['extract_features'],
-    'n_features': len(SLICE_FEATURE_NAMES) if FEATURE_CONFIG['extract_features'] else 0,
-    'feature_names': SLICE_FEATURE_NAMES if FEATURE_CONFIG['extract_features'] else [],
+    'n_features': len(ENHANCED_FEATURE_NAMES) if FEATURE_CONFIG['extract_features'] else 0,
+    'feature_names': list(ENHANCED_FEATURE_NAMES) if FEATURE_CONFIG['extract_features'] else [],
+    'feature_type': 'enhanced_v3',
     'slicing_method': f"PDG-based (backward_depth={PDG_SLICE_CONFIG['backward_depth']}, forward_depth={PDG_SLICE_CONFIG['forward_depth']})",
 }
 
