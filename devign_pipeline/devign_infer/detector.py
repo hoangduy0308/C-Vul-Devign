@@ -222,6 +222,66 @@ C_KEYWORDS: Set[str] = {
     '_Bool', '_Complex', '_Imaginary', 'nullptr', 'auto'
 }
 
+
+def _strip_comments(code: str) -> str:
+    """
+    Remove all C/C++ comments from code.
+    
+    Handles:
+    - Single-line comments: // ...
+    - Multi-line comments: /* ... */
+    - Line continuation in single-line comments: // ... \\ (newline)
+    - Preserves strings (doesn't strip // or /* inside strings)
+    
+    Returns code with comments replaced by whitespace to preserve line numbers.
+    """
+    # Pattern to match strings, single-line comments (with line continuation), or block comments
+    # Order matters: strings first to avoid matching // or /* inside strings
+    pattern = r'''
+        (?P<string>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')  # String literals
+        |(?P<line_comment>//(?:[^\n\\]|\\.|\\\n)*)       # Single-line comment (handles \ continuation)
+        |(?P<block_comment>/\*[\s\S]*?\*/)               # Block comment (non-greedy)
+    '''
+    
+    def replacer(match):
+        if match.group('string'):
+            return match.group('string')  # Keep strings
+        elif match.group('line_comment'):
+            # Preserve newlines from line continuations to maintain line numbers
+            comment = match.group('line_comment')
+            return '\n' * comment.count('\n')
+        elif match.group('block_comment'):
+            # Replace block comment with same number of newlines to preserve line numbers
+            return '\n' * match.group('block_comment').count('\n')
+        return ''
+    
+    return re.sub(pattern, replacer, code, flags=re.VERBOSE)
+
+
+def find_dangerous_apis_in_code(code: str, strip_comments: bool = True) -> List[str]:
+    """
+    Find dangerous APIs actually used in code (not in comments).
+    
+    Args:
+        code: Source code string
+        strip_comments: If True, remove comments before searching
+        
+    Returns:
+        List of dangerous API names found in actual code
+    """
+    if strip_comments:
+        code = _strip_comments(code)
+    
+    found = []
+    for api in DANGEROUS_APIS:
+        # Use word boundary regex to match function calls: api_name(
+        # This avoids matching my_strcpy or strcpy_wrapper
+        pattern = rf'\b{re.escape(api)}\s*\('
+        if re.search(pattern, code):
+            found.append(api)
+    
+    return found
+
 DANGEROUS_APIS: Set[str] = {
     'fprintf', 'memcpy', 'memset', 'strcmp', 'printf', 'strlen', 'snprintf',
     'close', 'free', 'strncmp', 'memcmp', 'sscanf', 'write', 'strcpy',
@@ -587,7 +647,7 @@ class VulnerabilityDetector:
             details = {
                 "num_slices": data['num_slices'],
                 "num_tokens": data['num_tokens'],
-                "dangerous_apis_found": [api for api in DANGEROUS_APIS if api in code],
+                "dangerous_apis_found": find_dangerous_apis_in_code(code, strip_comments=True),
                 "threshold_used": self.threshold,
                 "model_device": str(self.device),
                 "vocab_size": len(self.vocab),

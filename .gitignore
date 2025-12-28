@@ -12,3 +12,4 @@ temp_repo/
 
 build/
 .agents/
+c_vuln_scanner/

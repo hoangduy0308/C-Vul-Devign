@@ -135,11 +135,14 @@ class BaselineConfig:
     report_fixed_threshold_during_training: bool = True  # Report metrics at 0.5 during training to avoid noise
     
     # ============= VULN FEATURES (optional) =============
+    # CRITICAL: vuln_feature_dim MUST match the actual feature count in data!
+    # Check Dataset/devign_final/config.json -> n_features
     use_vuln_features: bool = True  # Enabled: handcrafted features help when tokens lack discriminative power
-    vuln_feature_dim: int = 35  # Enhanced features v3: 35 features (ratio-based + pattern-based)
+    vuln_feature_dim: int = 36  # Enhanced features v3: 36 features (ratio-based + pattern-based)
     vuln_feature_hidden_dim: int = 64
     vuln_feature_dropout: float = 0.4  # Oracle: Increase to 0.3-0.5 to prevent feature overfitting
     use_enhanced_features: bool = True  # Use new ratio-based + pattern-based features (ef_* columns)
+    feature_normalize_method: str = 'log_transform'  # 'log_transform' (preserves signal) or 'clip' (loses info)
     
     # ============= TOKEN AUGMENTATION =============
     # Oracle: Token augmentation is one of best regularizers for code models
@@ -160,6 +163,17 @@ class BaselineConfig:
     
     # ============= CHECKPOINTING =============
     save_every: int = 5
+    
+    # ============= CONTRASTIVE LEARNING =============
+    # Enable contrastive learning for better representation learning
+    use_contrastive: bool = False  # Set True to enable SupCon/SimCLR
+    contrastive_weight: float = 0.3  # Weight for contrastive loss (λ_con) - lower to avoid dominating BCE
+    contrastive_temperature: float = 0.5  # Temperature for contrastive loss - higher prevents loss explosion
+    use_supcon: bool = True  # True: Supervised Contrastive, False: SimCLR
+    contrastive_warmup_epochs: int = 3  # Train with BCE only first
+    projection_hidden_dim: int = 256  # Projection head hidden dim
+    projection_output_dim: int = 128  # Projection head output dim
+    use_contrastive_curriculum: bool = False  # Gradually increase contrastive weight
     
     def to_dict(self) -> Dict[str, Any]:
         """Export config to plain dict."""
@@ -250,6 +264,67 @@ def get_large_config() -> BaselineConfig:
         # Stronger regularization for larger model
         classifier_dropout=0.40,
         rnn_dropout=0.40,
+    )
+
+
+def get_contrastive_config() -> BaselineConfig:
+    """
+    Contrastive learning focused config.
+    
+    Uses Supervised Contrastive Loss (SupCon) to learn better representations
+    by pulling same-class samples together and pushing different-class samples apart.
+    
+    Benefits:
+    - Better feature representation for vulnerability detection
+    - More robust to class imbalance
+    - Improved generalization
+    
+    Training phases:
+    1. Warmup (2 epochs): BCE only for stable initial learning
+    2. Combined: BCE + SupCon with weight 0.5
+    """
+    return BaselineConfig().override(
+        # Enable contrastive learning
+        use_contrastive=True,
+        contrastive_weight=0.3,  # Reduced from 0.5 - contrastive is auxiliary
+        contrastive_temperature=0.5,  # Increased from 0.07 - prevents loss explosion
+        use_supcon=True,  # Supervised contrastive (uses labels)
+        contrastive_warmup_epochs=3,  # More warmup for stable training
+        
+        # Projection head settings
+        projection_hidden_dim=256,
+        projection_output_dim=128,
+        
+        # Slightly more epochs for contrastive learning
+        max_epochs=30,
+        patience=7,
+        
+        # Contrastive learning benefits from larger batch sizes
+        batch_size=128,
+    )
+
+
+def get_simclr_config() -> BaselineConfig:
+    """
+    SimCLR-style self-supervised contrastive config.
+    
+    Uses augmented views of the same sample as positive pairs.
+    Does NOT use labels for contrastive learning.
+    
+    Best for:
+    - Pre-training on unlabeled code
+    - Transfer learning scenarios
+    """
+    return BaselineConfig().override(
+        use_contrastive=True,
+        contrastive_weight=0.3,
+        contrastive_temperature=0.5,  # Higher temp for SimCLR
+        use_supcon=False,  # SimCLR mode
+        contrastive_warmup_epochs=1,
+        
+        # Stronger augmentation for SimCLR
+        token_dropout_prob=0.15,
+        token_mask_prob=0.10,
     )
 
 

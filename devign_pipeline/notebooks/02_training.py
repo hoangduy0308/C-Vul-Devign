@@ -21,13 +21,22 @@ import random
 import numpy as np
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, NamedTuple
 from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+
+
+class ModelOutput(NamedTuple):
+    """Structured output from ImprovedHybridBiGRUVulnDetector forward pass."""
+    logits: torch.Tensor
+    embeddings: Optional[torch.Tensor] = None
+    projections: Optional[torch.Tensor] = None
+
+
 from torch.utils.data import DataLoader, Dataset
 from torch.amp import autocast, GradScaler
 from torch.optim.swa_utils import AveragedModel, SWALR
@@ -61,6 +70,8 @@ from src.training.config_simplified import (
     get_conservative_config,
     get_no_pretrained_config,
     get_seeds_for_evaluation,
+    get_contrastive_config,
+    get_simclr_config,
 )
 from src.training.train_simplified import (
     SimplifiedLoss,
@@ -71,6 +82,16 @@ from src.training.train_simplified import (
     EvalMetrics,
     aggregate_results,
     AggregatedResults,
+)
+from src.training.contrastive import (
+    SupConLoss,
+    SimCLRLoss,
+    CombinedContrastiveLoss,
+    ContrastiveConfig,
+    ProjectionHead,
+    CodeAugmentor,
+    compute_contrastive_metrics,
+    ContrastiveTrainingCallback,
 )
 
 MODEL_DIR = os.path.join(WORKING_DIR, 'models')
@@ -107,8 +128,10 @@ class DevignDataset(Dataset):
         npz_path: str, 
         max_seq_length: int = 512, 
         load_vuln_features: bool = False, 
-        vuln_feature_dim: int = 35  # V3 Enhanced features: 35 dimensions
+        vuln_feature_dim: Optional[int] = None  # Uses BaselineConfig.vuln_feature_dim if None
     ):
+        if vuln_feature_dim is None:
+            vuln_feature_dim = BaselineConfig().vuln_feature_dim
         self.max_seq_length = max_seq_length
         self.load_vuln_features = load_vuln_features
         self.vuln_feature_dim = vuln_feature_dim
@@ -207,9 +230,11 @@ def create_dataloaders(
     max_seq_length: int,
     num_workers: int = 2,
     load_vuln_features: bool = False,
-    vuln_feature_dim: int = 35  # V3 Enhanced features: 35 dimensions
+    vuln_feature_dim: Optional[int] = None  # Uses BaselineConfig.vuln_feature_dim if None
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Create train/val/test dataloaders."""
+    if vuln_feature_dim is None:
+        vuln_feature_dim = BaselineConfig().vuln_feature_dim
     train_path = Path(data_dir) / 'train.npz'
     val_path = Path(data_dir) / 'val.npz'
     test_path = Path(data_dir) / 'test.npz'
@@ -358,6 +383,27 @@ class ImprovedHybridBiGRUVulnDetector(nn.Module):
             nn.Dropout(config.classifier_dropout),
             nn.Linear(self.combined_dim // 2, 2)
         )
+        
+        # Projection head for contrastive learning
+        self.use_contrastive = getattr(config, 'use_contrastive', False)
+        if self.use_contrastive:
+            projection_hidden = getattr(config, 'projection_hidden_dim', 256)
+            projection_output = getattr(config, 'projection_output_dim', 128)
+            self.projection_head = ProjectionHead(
+                input_dim=self.combined_dim,
+                hidden_dim=projection_hidden,
+                output_dim=projection_output,
+                dropout=0.1
+            )
+            # Augmentor for generating contrastive views
+            # NOTE: shuffle_prob=0 vì shuffling sẽ làm sai lệch extended_token_type_ids
+            # Token type IDs gắn liền với vị trí gốc, nếu shuffle tokens mà không shuffle
+            # type IDs thì embedding sẽ bị sai ngữ nghĩa
+            self.contrastive_augmentor = CodeAugmentor(
+                dropout_prob=0.15,
+                mask_prob=0.10,
+                shuffle_prob=0.0  # Tắt shuffle để giữ đồng bộ với token_type_ids
+            )
     
     def apply_token_augmentation(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         if not self.training or not self.use_token_augmentation:
@@ -388,6 +434,8 @@ class ImprovedHybridBiGRUVulnDetector(nn.Module):
         token_type_ids=None, 
         sep_pos=None,
         extended_token_type_ids=None,
+        return_embeddings=False,
+        return_projections=False,
     ):
         B, L = input_ids.shape
         
@@ -437,7 +485,27 @@ class ImprovedHybridBiGRUVulnDetector(nn.Module):
             combined = self.pre_classifier_ln(combined)
         
         logits = self.classifier(combined)
-        return logits
+        
+        embeddings = combined if return_embeddings else None
+        projections = None
+        
+        if return_projections and self.use_contrastive:
+            projections = self.projection_head(combined)
+        
+        return ModelOutput(
+            logits=logits,
+            embeddings=embeddings,
+            projections=projections,
+        )
+    
+    def get_augmented_input(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        """Generate augmented input_ids for contrastive learning.
+        
+        Call this BEFORE forward() for the augmented view to save VRAM.
+        """
+        if self.use_contrastive and self.contrastive_augmentor is not None:
+            return self.contrastive_augmentor(input_ids, attention_mask)
+        return input_ids
 
 
 class TemperatureScaling(nn.Module):
@@ -498,10 +566,10 @@ class TemperatureScaling(nn.Module):
                 if extended_token_type_ids is not None:
                     extended_token_type_ids = extended_token_type_ids.to(device)
                 
-                logits = model(input_ids, attention_mask, vuln_features, lengths, 
+                outputs = model(input_ids, attention_mask, vuln_features, lengths, 
                               extended_token_type_ids=extended_token_type_ids)
                 
-                all_logits.append(logits)
+                all_logits.append(outputs.logits)
                 all_labels.append(labels)
         
         all_logits = torch.cat(all_logits, dim=0)
@@ -856,14 +924,113 @@ def _forward_pass(
 ) -> torch.Tensor:
     """Run forward pass with AMP."""
     with autocast(device_type='cuda', enabled=config.use_amp):
-        logits = model(
+        outputs = model(
             input_ids, 
             attention_mask, 
             vuln_features, 
             lengths,
             extended_token_type_ids=extended_token_type_ids,
         )
-    return logits
+    return outputs.logits
+
+
+def _compute_step_loss(
+    model: nn.Module,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    labels: torch.Tensor,
+    vuln_features: Optional[torch.Tensor],
+    lengths: torch.Tensor,
+    extended_token_type_ids: Optional[torch.Tensor],
+    criterion: nn.Module,
+    apply_contrastive: bool,
+    contrastive_criterion: Optional[nn.Module] = None,
+    contrastive_weight: float = 0.5,
+    use_supcon: bool = True,
+) -> Dict[str, Any]:
+    """Compute forward pass and losses for a single training step.
+    
+    Memory-efficient contrastive learning: calls forward() twice (original + augmented)
+    instead of computing both views in a single pass. This releases the activation
+    graph of the first view before computing the second, reducing peak VRAM usage.
+    
+    Args:
+        model: The model to run forward pass on
+        input_ids, attention_mask, labels, vuln_features, lengths, extended_token_type_ids: Batch tensors
+        criterion: Main classification loss function
+        apply_contrastive: Whether to apply contrastive learning this step
+        contrastive_criterion: Contrastive loss function (SupConLoss or SimCLRLoss)
+        contrastive_weight: Weight for contrastive loss term
+        use_supcon: If True, use SupCon; otherwise use SimCLR
+    
+    Returns:
+        Dict with 'loss', 'cls_loss', 'con_loss', and 'logits'
+    """
+    if apply_contrastive:
+        # Forward pass 1: Original view
+        outputs = model(
+            input_ids, 
+            attention_mask, 
+            vuln_features, 
+            lengths,
+            extended_token_type_ids=extended_token_type_ids,
+            return_embeddings=True,
+            return_projections=True,
+        )
+        logits = outputs.logits
+        projections = outputs.projections
+        
+        # Classification loss (only on original view)
+        cls_loss = criterion(logits, labels)
+        
+        # Forward pass 2: Augmented view (separate call = separate activation graph)
+        # Handle DataParallel wrapper
+        base_model = model.module if hasattr(model, 'module') else model
+        aug_input_ids = base_model.get_augmented_input(input_ids, attention_mask)
+        aug_outputs = model(
+            aug_input_ids, 
+            attention_mask, 
+            vuln_features, 
+            lengths,
+            extended_token_type_ids=extended_token_type_ids,
+            return_embeddings=True,
+            return_projections=True,
+        )
+        aug_projections = aug_outputs.projections
+        
+        # Contrastive loss
+        if use_supcon:
+            # SupCon with 2 views: stack as [B, 2, D] for proper multi-view handling
+            # This tells SupConLoss that sample i has 2 views that should be treated as positives
+            stacked_projections = torch.stack([projections, aug_projections], dim=1)  # [B, 2, D]
+            con_loss = contrastive_criterion(stacked_projections, labels)
+        else:
+            # SimCLR: compare original vs augmented views
+            con_loss = contrastive_criterion(projections, aug_projections)
+        
+        total_loss = cls_loss + contrastive_weight * con_loss
+        return {
+            'loss': total_loss,
+            'cls_loss': cls_loss.item(),
+            'con_loss': con_loss.item(),
+            'logits': logits,
+        }
+    else:
+        outputs = model(
+            input_ids, 
+            attention_mask, 
+            vuln_features, 
+            lengths,
+            extended_token_type_ids=extended_token_type_ids,
+        )
+        logits = outputs.logits
+        loss = criterion(logits, labels)
+        return {
+            'loss': loss,
+            'cls_loss': loss.item(),
+            'con_loss': 0.0,
+            'logits': logits,
+        }
 
 
 def train_epoch(
@@ -874,19 +1041,37 @@ def train_epoch(
     scaler: GradScaler,
     config: BaselineConfig,
     device: torch.device,
-    compute_accurate_metrics: bool = True
+    compute_accurate_metrics: bool = True,
+    epoch: int = 0,
+    contrastive_criterion: nn.Module = None,
 ) -> Dict[str, float]:
-    """Single training epoch.
+    """Single training epoch with optional contrastive learning.
     
     Args:
         compute_accurate_metrics: If True, compute metrics in eval mode at end of epoch.
             This adds ~10-15% time but gives accurate train F1/AUC comparable to val metrics.
             If False, uses approximate metrics collected during training (with dropout ON).
+        epoch: Current epoch number (for contrastive warmup)
+        contrastive_criterion: Contrastive loss function (SupConLoss or SimCLRLoss)
     """
     model.train()
     total_loss = 0.0
+    total_cls_loss = 0.0
+    total_con_loss = 0.0
     # Always collect approximate metrics during training (for fallback)
     approx_probs, approx_labels = [], []
+    
+    # Contrastive learning settings
+    use_contrastive = getattr(config, 'use_contrastive', False)
+    contrastive_warmup = getattr(config, 'contrastive_warmup_epochs', 2)
+    contrastive_weight = getattr(config, 'contrastive_weight', 0.5)
+    use_supcon = getattr(config, 'use_supcon', True)
+    
+    # Only use contrastive after warmup
+    apply_contrastive = use_contrastive and epoch >= contrastive_warmup and contrastive_criterion is not None
+    
+    if apply_contrastive and epoch == contrastive_warmup:
+        print(f"  [Contrastive] Starting contrastive learning (weight={contrastive_weight})")
     
     optimizer.zero_grad()
     
@@ -894,14 +1079,25 @@ def train_epoch(
         input_ids, attention_mask, labels, vuln_features, lengths, extended_token_type_ids = _prepare_batch(batch, device)
         
         with autocast(device_type='cuda', enabled=config.use_amp):
-            logits = model(
-                input_ids, 
-                attention_mask, 
-                vuln_features, 
-                lengths,
+            step_result = _compute_step_loss(
+                model=model,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
+                vuln_features=vuln_features,
+                lengths=lengths,
                 extended_token_type_ids=extended_token_type_ids,
+                criterion=criterion,
+                apply_contrastive=apply_contrastive,
+                contrastive_criterion=contrastive_criterion,
+                contrastive_weight=contrastive_weight,
+                use_supcon=use_supcon,
             )
-            loss = criterion(logits, labels)
+            loss = step_result['loss']
+            logits = step_result['logits']
+            total_cls_loss += step_result['cls_loss']
+            total_con_loss += step_result['con_loss']
+            
             loss = loss / config.accumulation_steps
         
         scaler.scale(loss).backward()
@@ -952,11 +1148,19 @@ def train_epoch(
     except:
         auc = 0.5
     
-    return {
+    result = {
         'loss': avg_loss,
         'f1': f1_score(all_labels, all_preds, zero_division=0),
         'auc': auc,
     }
+    
+    # Add contrastive loss info if applicable
+    if use_contrastive:
+        n_batches = len(loader) if len(loader) > 0 else 1
+        result['cls_loss'] = total_cls_loss / n_batches
+        result['con_loss'] = total_con_loss / n_batches if apply_contrastive else 0.0
+    
+    return result
 
 
 @torch.no_grad()
@@ -1004,13 +1208,14 @@ def evaluate(
             extended_token_type_ids = extended_token_type_ids.to(device, non_blocking=True)
         
         with autocast(device_type='cuda', enabled=config.use_amp):
-            logits = model(
+            outputs = model(
                 input_ids, 
                 attention_mask, 
                 vuln_features, 
                 lengths,
                 extended_token_type_ids=extended_token_type_ids,
             )
+            logits = outputs.logits
             loss = criterion(logits, labels)
         
         total_loss += loss.item()
@@ -1321,6 +1526,21 @@ def train_single_seed(
         focal_alpha=getattr(config, 'focal_alpha', None),
     ).to(DEVICE)
     
+    # Contrastive loss function (if enabled)
+    contrastive_criterion = None
+    use_contrastive = getattr(config, 'use_contrastive', False)
+    if use_contrastive:
+        use_supcon = getattr(config, 'use_supcon', True)
+        contrastive_temp = getattr(config, 'contrastive_temperature', 0.07)
+        if use_supcon:
+            contrastive_criterion = SupConLoss(temperature=contrastive_temp)
+            if verbose:
+                print(f"  [Contrastive] SupConLoss enabled (temp={contrastive_temp})")
+        else:
+            contrastive_criterion = SimCLRLoss(temperature=contrastive_temp)
+            if verbose:
+                print(f"  [Contrastive] SimCLRLoss enabled (temp={contrastive_temp})")
+    
     # Optimizer (Word2Vec removed - no differential LR needed)
     optimizer = optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     
@@ -1381,7 +1601,9 @@ def train_single_seed(
         # Train - only compute accurate metrics every 5 epochs to save time
         compute_accurate = (epoch % 5 == 0) or (epoch == config.max_epochs)
         train_metrics = train_epoch(model, train_loader, optimizer, criterion, scaler, config, DEVICE, 
-                                    compute_accurate_metrics=compute_accurate)
+                                    compute_accurate_metrics=compute_accurate,
+                                    epoch=epoch,
+                                    contrastive_criterion=contrastive_criterion)
         
         # Validate - Oracle: Use fixed threshold during training to reduce noise
         use_fixed = getattr(config, 'report_fixed_threshold_during_training', True)
@@ -1398,13 +1620,20 @@ def train_single_seed(
         history['val_f1'].append(val_metrics['f1'])
         history['val_auc'].append(val_metrics['auc'])
         
+        # Record contrastive loss if applicable
+        if use_contrastive and 'con_loss' in train_metrics:
+            if 'train_con_loss' not in history:
+                history['train_con_loss'] = []
+            history['train_con_loss'].append(train_metrics['con_loss'])
+        
         # Get current LR for logging
         current_lr = optimizer.param_groups[0]['lr']
         
         if verbose:
+            con_info = f" ConL={train_metrics.get('con_loss', 0):.3f}" if use_contrastive and train_metrics.get('con_loss', 0) > 0 else ""
             print(
                 f"  Ep {epoch:2d}/{config.max_epochs} ({epoch_time:.0f}s) LR={current_lr:.2e} | "
-                f"Train: L={train_metrics['loss']:.3f} F1={train_metrics['f1']:.3f} | "
+                f"Train: L={train_metrics['loss']:.3f} F1={train_metrics['f1']:.3f}{con_info} | "
                 f"Val: F1={val_metrics['f1']:.3f} AUC={val_metrics['auc']:.3f} T={val_metrics['threshold']:.2f}"
             )
         
@@ -1571,6 +1800,38 @@ def train_multi_seed(
         save_path=cm_path
     )
     
+    # Save best model
+    save_path = os.path.join(MODEL_DIR, f'best_model_seed{best_seed}.pt')
+    base_model = best_model.module if isinstance(best_model, nn.DataParallel) else best_model
+    torch.save({
+        'model_state_dict': base_model.state_dict(),
+        'config': config.to_dict(),
+        'seed': best_seed,
+        'val_f1': all_results[best_idx].f1,
+        'val_auc': all_results[best_idx].auc,
+        'threshold': all_results[best_idx].threshold,
+        'test_metrics': {
+            'f1': test_metrics['f1'],
+            'precision': test_metrics['precision'],
+            'recall': test_metrics['recall'],
+            'auc': test_metrics['auc'],
+        }
+    }, save_path)
+    print(f"\nSaved best model to {save_path}")
+    
+    # Also save all seed models for ensemble
+    for i, (model, seed) in enumerate(zip(all_models, seeds)):
+        model_path = os.path.join(MODEL_DIR, f'model_seed{seed}.pt')
+        base_m = model.module if isinstance(model, nn.DataParallel) else model
+        torch.save({
+            'model_state_dict': base_m.state_dict(),
+            'config': config.to_dict(),
+            'seed': seed,
+            'val_f1': all_results[i].f1,
+            'val_auc': all_results[i].auc,
+        }, model_path)
+    print(f"Saved all {n_seeds} models to {MODEL_DIR}")
+    
     return aggregated
 
 
@@ -1588,7 +1849,7 @@ def main(
     
     Args:
         config_name: One of "baseline", "improved", "conservative", "recall_focused", 
-                     "precision_focused", "large", "focal"
+                     "precision_focused", "large", "focal", "contrastive", "simclr"
         n_seeds: Number of seeds for multi-seed evaluation
         data_dir: Path to preprocessed data
     """
@@ -1605,6 +1866,8 @@ def main(
         "large": get_large_config,
         "focal": get_focal_config,
         "no_pretrained": get_no_pretrained_config,
+        "contrastive": get_contrastive_config,
+        "simclr": get_simclr_config,
     }
     
     if config_name not in config_getters:
@@ -1631,6 +1894,14 @@ def main(
     print(f"  use_token_augmentation: {config.use_token_augmentation}")
     print(f"  use_temperature_scaling: {getattr(config, 'use_temperature_scaling', False)}")
     print(f"  vuln_feature_dropout: {config.vuln_feature_dropout}")
+    # Contrastive learning info
+    use_contrastive = getattr(config, 'use_contrastive', False)
+    if use_contrastive:
+        print(f"  use_contrastive: {use_contrastive}")
+        print(f"    contrastive_weight: {config.contrastive_weight}")
+        print(f"    contrastive_temperature: {config.contrastive_temperature}")
+        print(f"    use_supcon: {config.use_supcon}")
+        print(f"    warmup_epochs: {config.contrastive_warmup_epochs}")
     print(f"  n_seeds: {n_seeds}")
     print(f"{'='*60}\n")
     
@@ -1751,10 +2022,11 @@ def main(
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="Devign Training V2 - With Oracle Improvements")
+    parser = argparse.ArgumentParser(description="Devign Training V2 - With Oracle Improvements + Contrastive Learning")
     parser.add_argument("--config", type=str, default="baseline",
                         choices=["baseline", "improved", "conservative", "recall_focused", 
-                                "precision_focused", "large", "focal", "no_pretrained"],
+                                "precision_focused", "large", "focal", "no_pretrained",
+                                "contrastive", "simclr"],
                         help="Config preset to use (default: baseline with all Oracle fixes)")
     parser.add_argument("--seeds", type=int, default=3)
     parser.add_argument("--data-dir", type=str, default=None)
@@ -1771,3 +2043,22 @@ if __name__ == "__main__":
 # Quick run for notebook:
 # Uncomment the line below to run training with Oracle-recommended improvements
 # main(config_name="baseline", n_seeds=3)
+
+# %%
+# === CONTRASTIVE LEARNING EXAMPLES ===
+# 
+# Option 1: Use pre-defined contrastive config (SupCon)
+# main(config_name="contrastive", n_seeds=3)
+#
+# Option 2: Use SimCLR config (self-supervised style)
+# main(config_name="simclr", n_seeds=3)
+#
+# Option 3: Manually enable contrastive on any config:
+# config = get_baseline_config()
+# config = config.override(
+#     use_contrastive=True,
+#     contrastive_weight=0.5,
+#     contrastive_temperature=0.07,
+#     use_supcon=True,
+#     contrastive_warmup_epochs=2,
+# )
