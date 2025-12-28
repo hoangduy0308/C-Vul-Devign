@@ -48,21 +48,27 @@ STRING_CATEGORIES = {
 
 # Numeric tokens
 NUMERIC_TOKENS = {'NEG_1', 'NUM', 'NUM_HEX', 'NUM_OCT', 'FLOAT', 
-                  'NUM_8BIT', 'NUM_16BIT', 'NUM_32BIT', 'NUM_LARGE'}
+                  'NUM_8BIT', 'NUM_16BIT', 'NUM_32BIT', 'NUM_LARGE',
+                  'IDNUM'}  # IDNUM for long digit sequences inside identifiers
 
 
 DEFAULT_CONFIG = {
     'preserve_dangerous_apis': True,
     'preserve_defense_apis': True,
-    'preserve_function_names': True,  # Keep all function names intact
-    'preserve_identifiers': True,     # Keep all identifiers intact (variables, types, etc.)
+    'preserve_function_names': False,  # SPLIT function names (except dangerous/defense)
+    'preserve_identifiers': False,     # SPLIT all identifiers into subtokens
     'preserve_keywords': True,
     'identifier_case': 'lower',  # 'lower', 'preserve', 'smart'
-    'digits_policy': 'keep_alnum',  # 'keep_alnum', 'split_alpha_digit'
+    'digits_policy': 'split_alpha_digit',  # 'keep_alnum', 'split_alpha_digit'
     'max_subtokens_per_identifier': 8,
-    # Hybrid identifier strategy: preserve high-freq identifiers, split rare ones
-    'hybrid_identifier_mode': True,   # Enable hybrid mode (requires vocab frequency info)
-    'hybrid_min_freq_threshold': 5,   # Identifiers with freq >= this are preserved whole
+    # Hybrid identifier strategy: disabled by default when preserve_identifiers=False
+    'hybrid_identifier_mode': False,
+    'hybrid_min_freq_threshold': 5,
+    # Normalize long digit sequences inside identifiers to IDNUM
+    'normalize_long_digits': True,     # abc_211_aaa -> abc, IDNUM, aaa
+    'long_digit_threshold': 3,         # Digits with >= 3 chars become IDNUM
+    # Split macros instead of preserving whole
+    'split_macros': True,              # CONFIG_GRAY -> config, gray
     'numeric_policy': {
         'keep_small_integers': True,
         'keep_negative_one': True,
@@ -81,7 +87,7 @@ DEFAULT_CONFIG = {
         'map_ip': True,
         'map_email': True,
     },
-    'macro_prefixes': ('CONFIG_', 'AVERROR_', 'CODEC_', 'FF_', 'AV_'),  # Project-specific macro prefixes
+    'macro_prefixes': ('CONFIG_', 'AVERROR_', 'CODEC_', 'FF_', 'AV_'),
 }
 
 
@@ -265,61 +271,99 @@ class HybridSubtokenTokenizer:
         if is_function_call and is_defense_function(value):
             return [value], 'API_DEFENSE'
         
-        # NEW: Preserve ALL function names (not just dangerous/defense)
-        if self.config.get('preserve_function_names', True) and is_function_call:
-            # Apply case policy to function name
+        # Check if ALL_CAPS macro
+        is_macro = self._is_macro(value)
+        
+        # Handle macro splitting (if split_macros=True, split macros instead of preserving)
+        if is_macro:
+            if self.config.get('split_macros', True):
+                # Split macro: CONFIG_GRAY -> ['config', 'gray']
+                subtokens = self._split_identifier(value)
+                subtokens = self._normalize_subtokens(subtokens)
+                return subtokens, 'MACRO_SPLIT'
+            else:
+                return [value], 'MACRO'
+        
+        # Preserve function names (if preserve_function_names=True)
+        if self.config.get('preserve_function_names', False) and is_function_call:
             case_policy = self.config.get('identifier_case', 'lower')
             if case_policy == 'lower':
                 return [value.lower()], 'FUNCTION'
             return [value], 'FUNCTION'
-        
-        # Check if ALL_CAPS macro (preserve as single token)
-        if self._is_macro(value):
-            return [value], 'MACRO'
         
         # Apply case policy
         case_policy = self.config.get('identifier_case', 'lower')
         normalized_value = value.lower() if case_policy == 'lower' else value
         
         # Hybrid identifier strategy: check frequency before deciding to preserve or split
-        if self.config.get('preserve_identifiers', True):
+        if self.config.get('preserve_identifiers', False):
             # If hybrid mode is enabled and we have frequency data
             if self.hybrid_mode:
                 freq = self.token_freq.get(normalized_value, 0)
                 if freq >= self.hybrid_min_freq:
-                    # High frequency - preserve as single token
                     return [normalized_value], 'IDENTIFIER'
                 else:
-                    # Low frequency - split into subtokens to reduce OOV
                     subtokens = self._split_identifier(value)
-                    if case_policy == 'lower':
-                        subtokens = [s.lower() for s in subtokens]
+                    subtokens = self._normalize_subtokens(subtokens)
                     
                     if len(subtokens) == 1:
-                        # Can't split further, keep as-is (will likely become UNK)
                         return [normalized_value], 'IDENTIFIER_RARE'
                     
-                    # Apply max subtokens limit
                     max_sub = self.config.get('max_subtokens_per_identifier', 8)
                     if len(subtokens) > max_sub:
                         subtokens = subtokens[:max_sub]
                     return subtokens, 'SPLIT_RARE'
             else:
-                # No hybrid mode - preserve all identifiers (original behavior)
                 return [normalized_value], 'IDENTIFIER'
         
-        # Split identifier into subtokens (only if preserve_identifiers=False)
+        # ALWAYS split identifier into subtokens (preserve_identifiers=False)
         subtokens = self._split_identifier(value)
+        subtokens = self._normalize_subtokens(subtokens)
         
         if len(subtokens) == 1:
             return subtokens, 'IDENTIFIER'
         
-        # Apply max subtokens limit
         max_sub = self.config.get('max_subtokens_per_identifier', 8)
         if len(subtokens) > max_sub:
             subtokens = subtokens[:max_sub]
         
         return subtokens, 'SPLIT'
+    
+    def _normalize_subtokens(self, subtokens: List[str]) -> List[str]:
+        """
+        Apply normalization to subtokens:
+        - Lowercase if identifier_case='lower'
+        - Normalize long digit sequences to IDNUM if normalize_long_digits=True
+        
+        Examples:
+            ['abc', '211', 'aaa'] -> ['abc', 'IDNUM', 'aaa']  (if 211 >= threshold)
+            ['h', '264'] -> ['h', 'IDNUM']  (if split_alpha_digit and 264 >= threshold)
+        """
+        case_policy = self.config.get('identifier_case', 'lower')
+        normalize_long_digits = self.config.get('normalize_long_digits', True)
+        long_digit_threshold = self.config.get('long_digit_threshold', 3)
+        
+        result = []
+        for s in subtokens:
+            if not s:
+                continue
+            
+            # Check if this subtoken is all digits
+            if normalize_long_digits and s.isdigit():
+                if len(s) >= long_digit_threshold:
+                    # Normalize long digit sequences to IDNUM
+                    result.append('IDNUM')
+                else:
+                    # Keep short digits (0-99 typically)
+                    result.append(s)
+            else:
+                # Apply case policy for non-digit subtokens
+                if case_policy == 'lower':
+                    result.append(s.lower())
+                else:
+                    result.append(s)
+        
+        return result if result else subtokens
     
     def _is_macro(self, value: str) -> bool:
         """Check if identifier looks like a macro (ALL_CAPS with underscores)."""
@@ -337,8 +381,11 @@ class HybridSubtokenTokenizer:
         
         Examples:
             h264_filter_mb_fast_internal -> ['h264', 'filter', 'mb', 'fast', 'internal']
-            getByteCount -> ['get', 'byte', 'count']
-            HTTPConnection -> ['http', 'connection']
+            getByteCount -> ['get', 'Byte', 'Count'] (case preserved, normalized later)
+            HTTPConnection -> ['HTTP', 'Connection'] (case preserved, normalized later)
+            abc_211_aaa -> ['abc', '211', 'aaa'] (digits split if policy allows)
+        
+        Note: Case normalization and IDNUM substitution are done in _normalize_subtokens()
         """
         # First split by underscore (snake_case)
         parts = self._split_snake(ident)
@@ -348,14 +395,6 @@ class HybridSubtokenTokenizer:
         for part in parts:
             camel_parts = self._split_camel(part)
             result.extend(camel_parts)
-        
-        # Apply case policy
-        case_policy = self.config.get('identifier_case', 'lower')
-        if case_policy == 'lower':
-            result = [s.lower() for s in result]
-        elif case_policy == 'smart':
-            # Keep original case for single-char or already lowercase
-            result = [s.lower() if len(s) > 1 else s for s in result]
         
         # Filter empty strings
         result = [s for s in result if s]

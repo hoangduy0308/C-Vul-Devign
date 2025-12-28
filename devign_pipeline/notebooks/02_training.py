@@ -59,6 +59,7 @@ from src.training.config_simplified import (
     get_focal_config,
     get_improved_config,
     get_conservative_config,
+    get_no_pretrained_config,
     get_seeds_for_evaluation,
 )
 from src.training.train_simplified import (
@@ -523,28 +524,12 @@ class TemperatureScaling(nn.Module):
 
 
 def load_pretrained_embedding(config: BaselineConfig, data_dir: str) -> Optional[np.ndarray]:
-    """Load pretrained embedding matrix if available."""
-    if not config.use_pretrained_embedding:
-        return None
+    """Load pretrained embedding matrix if available.
     
-    emb_path = config.embedding_path
-    if not emb_path:
-        possible_paths = [
-            os.path.join(data_dir, 'embedding_matrix.npy'),
-            '/kaggle/working/embedding_matrix.npy',
-        ]
-        for p in possible_paths:
-            if os.path.exists(p):
-                emb_path = p
-                break
-    
-    if emb_path and os.path.exists(emb_path):
-        pretrained = np.load(emb_path)
-        print(f"Loaded pretrained embedding: {pretrained.shape}")
-        return pretrained
-    else:
-        print("Pretrained embedding not found, using random init")
-        return None
+    Note: Word2Vec has been removed from the pipeline. This function now
+    always returns None, using random initialization for embeddings.
+    """
+    return None
 
 
 def load_vocab_size_from_data(data_dir: str, tokenizer_type: Optional[str] = None) -> int:
@@ -1336,20 +1321,8 @@ def train_single_seed(
         focal_alpha=getattr(config, 'focal_alpha', None),
     ).to(DEVICE)
     
-    # Optimizer with differential LR for pretrained embeddings
-    base_model = model.module if isinstance(model, nn.DataParallel) else model
-    
-    if config.use_pretrained_embedding and not config.freeze_embedding and config.embedding_lr_scale != 1.0:
-        embedding_params = list(base_model.embedding.parameters())
-        embedding_ids = {id(p) for p in embedding_params}
-        other_params = [p for p in model.parameters() if id(p) not in embedding_ids and p.requires_grad]
-        
-        optimizer = optim.AdamW([
-            {'params': other_params, 'lr': config.learning_rate},
-            {'params': embedding_params, 'lr': config.learning_rate * config.embedding_lr_scale}
-        ], weight_decay=config.weight_decay)
-    else:
-        optimizer = optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    # Optimizer (Word2Vec removed - no differential LR needed)
+    optimizer = optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     
     # Scheduler
     use_warmup = getattr(config, 'use_warmup', False)
@@ -1389,7 +1362,7 @@ def train_single_seed(
         swa_scheduler = SWALR(optimizer, swa_lr=config.swa_lr, anneal_epochs=2)
     
     # Training loop with history tracking
-    best_f1, best_epoch = 0.0, 0
+    best_score, best_epoch = 0.0, 0
     best_state = None
     best_metrics = None
     
@@ -1444,16 +1417,23 @@ def train_single_seed(
         else:
             scheduler.step()
         
-        # Save best
-        if val_metrics['f1'] > best_f1:
-            best_f1 = val_metrics['f1']
+        # Early stopping metric selection - Oracle: AUC is more stable than F1
+        es_metric = getattr(config, 'early_stopping_metric', 'auc')
+        if es_metric == 'auc':
+            current_metric = val_metrics['auc']
+        else:
+            current_metric = val_metrics['f1']
+        
+        # Save best (always track best by the early stopping metric)
+        if current_metric > best_score:
+            best_score = current_metric
             best_epoch = epoch
             best_state = {k: v.cpu().clone() for k, v in base_model.state_dict().items()}
             best_metrics = val_metrics
         
-        if early_stopping(val_metrics['f1']):
+        if early_stopping(current_metric):
             if verbose:
-                print(f"  Early stopping at epoch {epoch}")
+                print(f"  Early stopping at epoch {epoch} (best {es_metric}={best_score:.4f})")
             break
     
     # SWA finalization
@@ -1464,11 +1444,11 @@ def train_single_seed(
         if verbose:
             print(f"  [SWA] Val: F1={swa_metrics['f1']:.4f} AUC={swa_metrics['auc']:.4f}")
         
-        if swa_metrics['f1'] > best_f1:
+        if swa_metrics['f1'] > best_score:
             best_metrics = swa_metrics
             final_model = swa_model
             if verbose:
-                print(f"  [SWA] Using SWA model (F1={swa_metrics['f1']:.4f} > {best_f1:.4f})")
+                print(f"  [SWA] Using SWA model (F1={swa_metrics['f1']:.4f} > {best_score:.4f})")
         else:
             base_model.load_state_dict(best_state)
             final_model = model
@@ -1624,6 +1604,7 @@ def main(
         "precision_focused": get_precision_focused_config,
         "large": get_large_config,
         "focal": get_focal_config,
+        "no_pretrained": get_no_pretrained_config,
     }
     
     if config_name not in config_getters:
@@ -1773,7 +1754,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Devign Training V2 - With Oracle Improvements")
     parser.add_argument("--config", type=str, default="baseline",
                         choices=["baseline", "improved", "conservative", "recall_focused", 
-                                "precision_focused", "large", "focal"],
+                                "precision_focused", "large", "focal", "no_pretrained"],
                         help="Config preset to use (default: baseline with all Oracle fixes)")
     parser.add_argument("--seeds", type=int, default=3)
     parser.add_argument("--data-dir", type=str, default=None)

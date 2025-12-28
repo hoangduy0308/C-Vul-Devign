@@ -154,19 +154,34 @@ elif TOKENIZER_TYPE == 'optimized':
     }
 elif TOKENIZER_TYPE == 'subtoken':
     TOKENIZER_CONFIG = {
-        'min_freq': 3,                    # Tăng từ 2 lên 3 (theo Codemau approach)
-        'max_vocab_size': 30000,          # Tăng từ 15k lên 30k (giữ nguyên identifiers)
+        'min_freq': 5,                    # Higher min_freq to prune rare tokens (Oracle: 3-5)
+        'max_vocab_size': 15000,          # Smaller vocab generalizes better (15k vs 30k)
         'max_seq_length': 512,
         
-        # Preserve settings - giữ nguyên tên hàm và biến (theo Codemau)
-        'preserve_dangerous_apis': True,
-        'preserve_defense_apis': True,
-        'preserve_function_names': True,  # Giữ nguyên tên hàm
-        'preserve_identifiers': True,     # Giữ nguyên tên biến/type
-        'preserve_keywords': True,
-        'identifier_case': 'lower',       # 'lower', 'preserve', 'smart'
-        'digits_policy': 'keep_alnum',    # Keep h264, sha256 intact
+        # ALWAYS SPLIT identifiers to reduce project-specific shortcuts
+        # This is the key change for reducing model's shortcut learning
+        'preserve_dangerous_apis': True,   # Keep malloc, strcpy, memcpy etc intact
+        'preserve_defense_apis': True,     # Keep is_null_check, bounds_check etc intact
+        'preserve_function_names': False,  # SPLIT function names (except dangerous/defense)
+        'preserve_identifiers': False,     # SPLIT all identifiers into subtokens
+        'preserve_keywords': True,         # Keep C keywords (if, for, while, etc)
+        'identifier_case': 'lower',        # Lowercase for normalization
+        
+        # SPLIT at alpha<->digit boundaries: h264 -> ['h', '264']
+        # This reduces project-specific shortcuts like block_211, tmp_1837
+        'digits_policy': 'split_alpha_digit',
         'max_subtokens_per_identifier': 8,
+        
+        # Hybrid mode is disabled when preserve_identifiers=False
+        'hybrid_identifier_mode': False,
+        
+        # Normalize long digit sequences inside identifiers to reduce shortcuts
+        # Digits >= 3 characters become IDNUM (e.g., abc_211_aaa -> abc, IDNUM, aaa)
+        'normalize_long_digits': True,
+        'long_digit_threshold': 3,         # Digits with >= 3 chars become IDNUM
+        
+        # Split macros instead of preserving whole (CONFIG_GRAY -> config, gray)
+        'split_macros': True,
         
         # Numeric policy
         'numeric_policy': {
@@ -190,11 +205,11 @@ elif TOKENIZER_TYPE == 'subtoken':
             'map_email': True,
         },
         
-        # Project-specific macro prefixes (for Devign: FFmpeg/QEMU)
+        # Project-specific macro prefixes - now split instead of preserve
         'macro_prefixes': ('CONFIG_', 'AVERROR_', 'CODEC_', 'FF_', 'AV_'),
         
         # Vocab persistence - load existing vocab instead of rebuilding
-        'vocab_path': None,  # Set to path to load pre-built vocab (e.g., 'output/vocab.json')
+        'vocab_path': None,
         
         # Truncation strategy
         'truncation_strategy': 'head_tail',

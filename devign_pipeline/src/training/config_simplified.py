@@ -87,6 +87,7 @@ class BaselineConfig:
     # Early stopping
     patience: int = 5
     min_delta: float = 1e-4
+    early_stopping_metric: str = "auc"  # "auc" or "f1" - Oracle: AUC is more stable
     
     # Scheduler - Oracle: cosine decay is less reactive/noisy on small val sets
     scheduler_type: str = "cosine"  # Options: "plateau", "cosine"
@@ -118,11 +119,11 @@ class BaselineConfig:
     num_workers: int = 2
     use_packed_sequences: bool = True
     
-    # ============= PRETRAINED EMBEDDING =============
-    use_pretrained_embedding: bool = True
+    # ============= EMBEDDING =============
+    use_pretrained_embedding: bool = False  # Word2Vec removed, always use random init
     embedding_path: str = ""
     freeze_embedding: bool = False
-    embedding_lr_scale: float = 0.1
+    embedding_lr_scale: float = 1.0  # No differential LR needed for random init
     
     # ============= THRESHOLD =============
     # Oracle: Report F1 at fixed threshold (0.5) during training, optimize once at end
@@ -271,6 +272,22 @@ def get_focal_config() -> BaselineConfig:
         threshold_optimization_metric='mcc',
         threshold_min=0.30,
         threshold_max=0.70,
+    )
+
+
+def get_no_pretrained_config() -> BaselineConfig:
+    """
+    Config with random embedding initialization (default).
+    
+    Note: Word2Vec has been removed from the pipeline. This is now
+    the standard configuration - all embeddings use random init.
+    """
+    return BaselineConfig().override(
+        use_pretrained_embedding=False,
+        embedding_lr_scale=1.0,
+        embedding_dropout=0.2,
+        max_epochs=30,
+        patience=7,
     )
 
 

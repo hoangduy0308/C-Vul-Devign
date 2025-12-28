@@ -399,9 +399,8 @@ print(f"Label distribution: 0={np.sum(train_data['labels']==0)}, 1={np.sum(train
 # %% [markdown]
 # ## Next Steps
 # 
-# 1. Train Word2Vec on new tokens (use 01c_train_word2vec_optimized.py)
-# 2. Train BiGRU model (use 02_training.py with updated config)
-# 3. Expected improvements:
+# 1. Train BiGRU model (use 02_training.py)
+# 2. Expected improvements:
 #    - Lower UNK rate
 #    - Better precision (fewer FP)
 #    - More stable threshold
@@ -410,4 +409,4 @@ print("\n" + "="*60)
 print("PREPROCESSING COMPLETE!")
 print("="*60)
 print(f"\nOutput directory: {OUTPUT_DIR}")
-print("\nNext: Run Word2Vec training with new vocabulary")
+print("\nNext: Run training with 02_training.py")
