@@ -64,6 +64,7 @@ from src.training.config_simplified import (
     get_baseline_config,
     get_recall_focused_config,
     get_precision_focused_config,
+    get_balanced_pr_config,
     get_large_config,
     get_focal_config,
     get_improved_config,
@@ -400,9 +401,9 @@ class ImprovedHybridBiGRUVulnDetector(nn.Module):
             # Token type IDs gắn liền với vị trí gốc, nếu shuffle tokens mà không shuffle
             # type IDs thì embedding sẽ bị sai ngữ nghĩa
             self.contrastive_augmentor = CodeAugmentor(
-                dropout_prob=0.15,
-                mask_prob=0.10,
-                shuffle_prob=0.0  # Tắt shuffle để giữ đồng bộ với token_type_ids
+                dropout_prob=0.20,  # Increased from 0.15
+                mask_prob=0.15,     # Increased from 0.10
+                shuffle_prob=0.0   # Keep disabled for token_type_ids alignment
             )
     
     def apply_token_augmentation(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
@@ -1863,6 +1864,7 @@ def main(
         "conservative": get_conservative_config,
         "recall_focused": get_recall_focused_config,
         "precision_focused": get_precision_focused_config,
+        "balanced_pr": get_balanced_pr_config,
         "large": get_large_config,
         "focal": get_focal_config,
         "no_pretrained": get_no_pretrained_config,
@@ -2025,7 +2027,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Devign Training V2 - With Oracle Improvements + Contrastive Learning")
     parser.add_argument("--config", type=str, default="baseline",
                         choices=["baseline", "improved", "conservative", "recall_focused", 
-                                "precision_focused", "large", "focal", "no_pretrained",
+                                "precision_focused", "balanced_pr", "large", "focal", "no_pretrained",
                                 "contrastive", "simclr"],
                         help="Config preset to use (default: baseline with all Oracle fixes)")
     parser.add_argument("--seeds", type=int, default=3)

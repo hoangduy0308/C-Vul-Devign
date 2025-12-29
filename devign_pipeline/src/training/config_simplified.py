@@ -389,6 +389,30 @@ def get_improved_config() -> BaselineConfig:
     return BaselineConfig()  # All Oracle fixes are now in BaselineConfig defaults
 
 
+def get_balanced_pr_config() -> BaselineConfig:
+    """
+    Balanced Precision-Recall config.
+    
+    Use when you need better balance between precision and recall.
+    Optimizes for geometric mean of P and R instead of F1.
+    
+    Expected: P~0.60, R~0.75, F1~0.66
+    """
+    return BaselineConfig().override(
+        # Use geometric mean of P*R for threshold optimization
+        threshold_optimization_metric='balanced',
+        threshold_min=0.30,  # Higher min threshold
+        threshold_max=0.60,
+        
+        # Stronger regularization to reduce overconfidence
+        classifier_dropout=0.40,
+        weight_decay=2e-3,
+        
+        # Label smoothing helps calibration
+        label_smoothing=0.05,
+    )
+
+
 def get_conservative_config() -> BaselineConfig:
     """
     Conservative config - less aggressive changes.

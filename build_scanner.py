@@ -201,7 +201,8 @@ def build_scanner():
     with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for file_path in BUILD_DIR.rglob('*'):
             if file_path.is_file():
-                arcname = file_path.relative_to(BUILD_DIR)
+                # Use forward slashes for cross-platform compatibility (Linux/macOS)
+                arcname = file_path.relative_to(BUILD_DIR).as_posix()
                 zf.write(file_path, arcname)
     
     # Calculate size
