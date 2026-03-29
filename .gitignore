@@ -1,5 +1,9 @@
 __pycache__/
 *.pyc
+AGENTS.md
+create_zip.py
+docs/*.docx
+devign_pipeline/notebooks/_archive_*.py
 output/
 venv/
 *.log
